@@ -22,7 +22,8 @@ name: Release
 #        uses: JoShMiQueL/gh-actions/.github/workflows/release.yml@main
 #        secrets:
 #          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}   # for `gh release edit`
-#          env:   ${{ secrets.PROJECT_RELEASE_ENV }}    # JSON {"KEY":"val",...}
+#          env-json:   ${{ secrets.PROJECT_RELEASE_ENV }}    # JSON {"KEY":"val",...}
+#                                                         # (renamed — bare 'env' is a reserved name)
 #        with:
 #          language: go
 #          build-command: go build -o dist/app.exe ./cmd/app
@@ -136,7 +137,7 @@ on:
       token:
         description: "PAT for `gh release edit` — falls back to github.token if unset."
         required: false
-      env:
+      env-json:
         description: "JSON object of env vars injected into every step — keeps per-project secrets out of the caller YAML."
         required: false
 
@@ -150,7 +151,7 @@ jobs:
     env:
       # secrets can't sit in `if:` conditions — map the env-JSON here so steps
       # can test `env.PROJ_ENV != ''` instead.
-      PROJ_ENV: ${{ secrets.env }}
+      PROJ_ENV: ${{ secrets.env-json }}
     steps:
       - uses: actions/checkout@v5
         with:
