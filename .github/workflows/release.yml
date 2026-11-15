@@ -174,8 +174,13 @@ jobs:
         if: ${{ env.PROJ_ENV != '' }}
         shell: pwsh
         run: |
+          # Mask every value BEFORE injecting — env vars otherwise echo in the
+          # "Environment considered" / step-env dump. add-mask makes GitHub
+          # scrub them from logs. Values with newlines are masked per-line.
           ($env:PROJ_ENV | ConvertFrom-Json).PSObject.Properties | ForEach-Object {
-            "$($_.Name)=$($_.Value)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            $v = "$($_.Value)"
+            foreach ($line in ($v -split "`r?`n")) { if ($line) { Write-Output "::add-mask::$line" } }
+            "$($_.Name)=$v" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           }
 
       # tag → version. `v0.1.4`→0.1.4, `pkg-v0.1.4`→0.1.4 (prefix "pkg-v"),
