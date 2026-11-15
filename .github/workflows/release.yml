@@ -417,7 +417,6 @@ jobs:
           TAG: ${{ steps.ver.outputs.tag }}
         shell: bash
         run: |
-          set -e
           is_pre=false
           [ "$PRERELEASE_IN" = "true" ] && is_pre=true
           [[ "$VER" == *-* ]] && is_pre=true
@@ -431,17 +430,19 @@ jobs:
 
           if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
             echo "no existing release for $TAG — creating one (plain notes)"
-            gh release create "$TAG" --repo "$REPO" --title "$title" --notes "Release $VER" "${flags[@]}"
+            gh release create "$TAG" --repo "$REPO" --title "$title" --notes "Release $VER" "${flags[@]}" || { echo "::error::gh release create failed"; exit 1; }
             sleep 3   # let the API settle before upload
           else
-            [ "$is_pre" = true ] || [ "$DRAFT_IN" = "true" ] && \
+            if $is_pre || [ "$DRAFT_IN" = "true" ]; then
               gh release edit "$TAG" --repo "$REPO" "${flags[@]}" || true
+            fi
             # Apply a caller-supplied title onto an existing release too.
             [ -n "$RELEASE_TITLE" ] && gh release edit "$TAG" --repo "$REPO" --title "$title"
           fi
 
           # `gh release upload` glob-mangles path args on Windows — upload the
           # BASENAME from inside the file's dir, the only form it can't break.
+          rc=0
           while IFS= read -r pat; do
             pat="$(echo "$pat" | tr -d '\r' | xargs)"
             [ -z "$pat" ] && continue
@@ -449,10 +450,13 @@ jobs:
             for f in $pat; do   # intentional unquoted glob expansion
               [ -e "$f" ] || continue
               matched=1
-              (cd "$(dirname "$f")" && gh release upload "$TAG" "$(basename "$f")" --clobber --repo "$REPO")
+              if ! (cd "$(dirname "$f")" && gh release upload "$TAG" "$(basename "$f")" --clobber --repo "$REPO"); then
+                echo "::error::gh release upload failed for $f"; rc=1
+              fi
             done
-            [ "$matched" = 0 ] && { echo "::error::artifact not found: $pat"; exit 1; }
+            [ "$matched" = 0 ] && { echo "::error::artifact not found: $pat"; rc=1; }
           done <<< "$ARTIFACTS"
+          exit $rc
 
       - name: Append release notes
         if: ${{ inputs.release-notes != '' }}
