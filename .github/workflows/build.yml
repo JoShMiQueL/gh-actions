@@ -16,9 +16,9 @@ name: Build
 #        fail-fast: false
 #        matrix:
 #          include:
-#            - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu }
-#            - { os: windows-latest, target: x86_64-pc-windows-msvc   }
-#            - { os: macos-latest,   target: x86_64-apple-darwin      }
+#            - { os: ubuntu-24.04,  target: x86_64-unknown-linux-gnu }
+#            - { os: windows-2022, target: x86_64-pc-windows-msvc   }
+#            - { os: macos-15,   target: x86_64-apple-darwin      }
 #      uses: .../build.yml@main
 #      with:
 #        runner: ${{ matrix.os }}
@@ -77,9 +77,9 @@ on:
         default: "v"
         type: string
       runner:
-        description: "Runner OS label — windows-latest | ubuntu-latest | macos-latest | any self-hosted label."
+        description: "Runner OS label — pin the image (windows-2022, ubuntu-24.04, macos-15) or a self-hosted label. `-latest` labels migrate under you; pin for reproducible builds."
         required: false
-        default: windows-latest
+        default: windows-2022
         type: string
       shell:
         description: "Shell the hook commands (setup/build/post-publish) run in — bash | pwsh | sh | cmd | python. Internal steps always use bash (Git Bash on Windows). Choose pwsh when your hooks need PowerShell syntax."

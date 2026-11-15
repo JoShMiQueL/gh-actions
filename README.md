@@ -102,7 +102,7 @@ create race.
 |---|---|---|
 | `version` | `""` | Manual-dispatch version → releases it directly, skips release-please entirely. Ignored on tag/branch push. |
 | `tag-prefix` | `"v"` | Prefix stripped from the tag to get the version: `v0.1.4`→`0.1.4`, `pkg-v0.1.4`→`0.1.4` (`tag-prefix: "pkg-v"`), `0.1.4`→`0.1.4` (`""`). |
-| `runner` | `ubuntu-latest` | OS for the metadata job — nothing compiles here. |
+| `runner` | `ubuntu-24.04` | OS for the metadata job — nothing compiles here. |
 | `release-title` | `""` | Title template — `{version}` and `{tag}` expand. Empty keeps rp's title (or `v{version}` on manual creates). |
 | `release-notes` | `""` | Markdown appended to the body — after the changelog, before Contributors. |
 | `contributors` | `true` | Append `### Contributors` — authors of `prev_tag..tag`, first-timers flagged `*(new contributor)*`. |
@@ -128,7 +128,7 @@ create race.
 |---|---|---|
 | `version` | `""` | Manual-dispatch version → tag = `tag-prefix`+version. Ignored on tag push. |
 | `tag-prefix` | `"v"` | Same resolution as release.yml. |
-| `runner` | `windows-latest` | Runner OS label — any GitHub or self-hosted label. Set per-leg when matrixing. |
+| `runner` | `windows-2022` | Runner OS label — any GitHub or self-hosted label. Set per-leg when matrixing. |
 | `shell` | `bash` | Shell for **hook** commands only (`setup`/`build`/`post-publish`) — `bash`/`pwsh`/`sh`/`cmd`. Internal steps always use bash (Git Bash on Windows). Use `pwsh` when hooks need PowerShell (`$env:VERSION`). |
 | `working-directory` | `""` | `cd` here after checkout — monorepo support. Stamp, hooks, build and artifact patterns all resolve relative to it. |
 
@@ -251,9 +251,9 @@ build:
     fail-fast: false
     matrix:
       include:
-        - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu }
-        - { os: windows-latest, target: x86_64-pc-windows-msvc   }
-        - { os: macos-latest,   target: x86_64-apple-darwin      }
+        - { os: ubuntu-24.04,  target: x86_64-unknown-linux-gnu }
+        - { os: windows-2022, target: x86_64-pc-windows-msvc   }
+        - { os: macos-15,   target: x86_64-apple-darwin      }
   uses: JoShMiQueL/gh-actions/.github/workflows/build.yml@main
   with:
     runner: ${{ matrix.os }}

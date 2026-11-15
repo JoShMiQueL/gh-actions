@@ -60,9 +60,9 @@ on:
         default: "v"
         type: string
       runner:
-        description: "Runner OS label for the metadata job — ubuntu-latest is plenty (no compilation happens here)."
+        description: "Runner OS label for the metadata job — a pinned ubuntu is plenty (no compilation happens here)."
         required: false
-        default: ubuntu-latest
+        default: ubuntu-24.04
         type: string
       # ── release body / metadata ──────────────────────────────────────────
       release-title:
@@ -120,9 +120,10 @@ jobs:
   please:
     name: release-please
     if: ${{ inputs.release-please && github.ref_type == 'branch' && inputs.version == '' }}
-    runs-on: ubuntu-latest
+    # pinned image — `-latest` labels migrate under us (Ubuntu 26 warning).
+    runs-on: ubuntu-24.04
     steps:
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@v5
         with:
           config-file: ${{ inputs.rp-config-file }}
           manifest-file: ${{ inputs.rp-manifest-file }}
