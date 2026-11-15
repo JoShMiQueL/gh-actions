@@ -43,10 +43,11 @@ jobs:
     uses: JoShMiQueL/gh-actions/.github/workflows/release.yml@main
     secrets:
       token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
-      env:   ${{ secrets.PROJECT_RELEASE_ENV }}   # JSON {"KEY":"val",...}
+      env-json:   ${{ secrets.PROJECT_RELEASE_ENV }}   # JSON {"KEY":"val",...}
+                                                     # (bare `env` is a reserved secret name — use env-json)
     with:
       version: ${{ inputs.version }}
-      language: rust
+      toolchain: rust
       node_workdir: launcher/ui
       setup-command: |
         (Get-Content launcher/src-tauri/Cargo.toml -Raw) -replace '(?m)^version\s*=\s*"[^"]*"', "version = `"${{ env.VERSION }}`"" | Set-Content launcher/src-tauri/Cargo.toml -NoNewline
@@ -61,22 +62,27 @@ jobs:
 |---|---|---|
 | `version` | — | manual-dispatch version (ignored on tag push) |
 | `tag-prefix` | `"v"` | strip this from the tag → version (`""`, `"pkg-v"`, …) |
-| `runner` | `windows-latest` | OS for the build |
-| `language` | `custom` | `rust` (toolchain+cache) \| `node` \| `go` \| `custom` |
+| `runner` | `windows-latest` | OS for the build (`ubuntu-latest`, `macos-latest`, …) |
+| `toolchain` | `custom` | space/comma-separated builtins → their setup action: `rust` (dtolnay+cache) `node` `go` `dotnet` `python` `bun` \| `custom` = none — exotic stacks (C++ MSVC, zig, java, flutter…) via `setup-command` or an earlier `uses:` in your workflow |
 | `node_version` | `24` | node for the frontend step |
-| `node_workdir` | `""` | dir with `package-lock.json` → `npm ci`+`npm run build`; empty skips it |
+| `node_workdir` | `""` | dir with a `package.json` → `npm ci\|install`+`npm run build` (no lockfile = `npm install`); empty skips it |
 | `setup-command` | `""` | pwsh pre-build (version stamp, codegen) — `$env:VERSION`/`$env:TAG` set |
 | `build-command` | — | **required** — the release build |
-| `artifacts` | — | **required** — paths/globs attached to the Release |
+| `artifacts` | — | **required** — paths/globs attached to the Release (one per line) — fails if any is missing |
 | `contributors` | `true` | append the Contributors section to the body |
+| `prerelease` | `false` | mark the Release pre-release — **auto** on `-` in the version (`v0.2.0-beta`, `-rc.1`) |
+| `draft` | `false` | create the Release as a draft |
 | `post-publish-command` | `""` | pwsh after attach (self-update pointer, notify) |
+
+**Cross-OS**: every `run:` step is `shell: pwsh` — present on windows/ubuntu/macos
+runners. Write hook commands in pwsh, not bash.
 
 ## Secrets
 
 | Secret | Needed for |
 |---|---|
 | `token` | `gh release edit` (contributors) — a PAT; falls back to `github.token` |
-| `env` | One JSON object = the project's whole env, injected into every step (`{"KEY":"val",...}`) — keeps secrets out of the YAML |
+| `env-json` | One JSON object = the project's whole env, injected into every step (`{"KEY":"val",...}`) — keeps secrets out of the YAML. **`env` is a reserved secret name — use `env-json`.** |
 
 ## Why not more pieces?
 
