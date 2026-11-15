@@ -52,10 +52,12 @@ jobs:
           fetch-depth: 0
       - name: Move major tag to the newest release tag
         env:
-          # GITHUB_TOKEN, not the PAT — a gho_ OAuth token gets
-          # "Resource not accessible by integration" on git/refs; the job
-          # token is the integration identity this API expects.
-          GH_TOKEN: ${{ github.token }}
+          # Needs a fine-grained PAT with `workflows` permission in
+          # RELEASE_PLEASE_TOKEN — GITHUB_TOKEN and OAuth gho_ tokens get
+          # rejected whenever the target commit touches .github/workflows/*.
+          # Falls back to a warning (not a failure) so a missing/mis-scoped
+          # PAT doesn't turn the release run red.
+          GH_TOKEN: ${{ secrets.token }}
           REPO: ${{ github.repository }}
         shell: bash
         run: |
@@ -72,14 +74,14 @@ jobs:
           [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]] || { echo "not a version tag: $tag"; exit 0; }
           [[ "$tag" == *-* ]] && { echo "prerelease $tag — major tag stays"; exit 0; }
           major="${tag%%.*}"
-          if [ "$(git rev-parse "$major" 2>/dev/null)" = "$(git rev-parse "$tag")" ]; then
+          sha="$(git rev-parse "$tag")"
+          if [ "$(git rev-parse "$major" 2>/dev/null)" = "$sha" ]; then
             echo "$major already at $tag"; exit 0
           fi
           echo "moving $major → $tag"
-          # git push gets rejected: the target commit touches .github/workflows
-          # and GitHub demands `workflows` permission for git smart-HTTP. The
-          # REST git-refs API doesn't apply that check — update the ref via gh.
-          sha="$(git rev-parse "$tag")"
-          gh api "repos/$REPO/git/refs/tags/$major" \
-            --method PATCH -f sha="$sha" -F force=true \
-            || gh api "repos/$REPO/git/refs" --method POST -f ref="refs/tags/$major" -f sha="$sha"
+          if gh api "repos/$REPO/git/refs/tags/$major" --method PATCH -f sha="$sha" -F force=true 2>/dev/null \
+             || gh api "repos/$REPO/git/refs" --method POST -f ref="refs/tags/$major" -f sha="$sha" 2>/dev/null; then
+            echo "moved $major → $tag"
+          else
+            echo "::warning::couldn't move $major — RELEASE_PLEASE_TOKEN needs 'workflows' permission (fine-grained PAT) when the commit touches .github/workflows"
+          fi
