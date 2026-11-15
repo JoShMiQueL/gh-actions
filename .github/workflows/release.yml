@@ -230,6 +230,12 @@ jobs:
         env:
           PROJ_ENV_RAW: ${{ secrets.env-json }}
         run: |
+          # Validate before parsing — a malformed env-json fails with a clear
+          # message instead of a bare `jq: parse error`.
+          if ! echo "$PROJ_ENV_RAW" | jq -e 'type == "object"' >/dev/null 2>&1; then
+            echo "::error::env-json secret is not a JSON object — expected {\"KEY\":\"val\",...}"
+            exit 1
+          fi
           # Mask every value BEFORE injecting — env vars otherwise echo in the
           # per-step "env:" dump. add-mask makes GitHub scrub them from logs.
           echo "$PROJ_ENV_RAW" | jq -r '.[]' | while IFS= read -r v; do
@@ -237,7 +243,17 @@ jobs:
               [ -n "$line" ] && echo "::add-mask::$line"
             done <<< "$v"
           done
-          echo "$PROJ_ENV_RAW" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
+          # Multiline values need the KEY<<DELIM heredoc form, not KEY=value —
+          # otherwise a value containing \n truncates. Non-string values
+          # (numbers/bools) serialize fine via @json-free %s.
+          echo "$PROJ_ENV_RAW" | jq -r 'to_entries[] | "\(.key)\u0000\(.value|tostring)\u0000"' |
+          while IFS= read -r -d '' k && IFS= read -r -d '' v; do
+            if [[ "$v" == *$'\n'* ]]; then
+              { echo "$k<<S1L_EOF_$k"; echo "$v"; echo "S1L_EOF_$k"; } >> "$GITHUB_ENV"
+            else
+              echo "$k=$v" >> "$GITHUB_ENV"
+            fi
+          done
 
       # tag → version. v0.1.4→0.1.4, pkg-v0.1.4→0.1.4 (prefix "pkg-v"),
       # 0.1.4→0.1.4 (prefix ""). Manual dispatch synthesizes tag = prefix+ver.
