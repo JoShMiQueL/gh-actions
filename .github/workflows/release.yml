@@ -347,6 +347,7 @@ jobs:
         working-directory: ${{ inputs.node_workdir }}
         shell: bash
         run: |
+          [ -f package.json ] || { echo "::error::node_workdir '${{ inputs.node_workdir }}' has no package.json"; exit 1; }
           if [ -f package-lock.json ]; then npm ci; else npm install; fi
           npm run build
 
