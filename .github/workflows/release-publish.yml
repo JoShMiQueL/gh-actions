@@ -1,0 +1,204 @@
+name: Release Publish (reusable)
+
+# Generic tag-driven release pipeline. A tag (from release-please merge or
+# manual) triggers: resolve version → optional version-stamp → build → attach
+# binaries → append a `### Contributors` section to the RELEASE BODY (the
+# CHANGELOG.md file stays clean — only categorized changes, no contributors).
+#
+# The split is the industry model (clap et al.):
+#   CHANGELOG.md  → changes only (release-please owns it)
+#   Release body  → changes + contributors + (new) badges
+#
+# Caller (in each project) — s1l example:
+#   on:
+#     push: { tags: ["v*.*.*"] }
+#     workflow_dispatch:
+#       inputs: { version: { required: true } }
+#   permissions: { contents: write }
+#   jobs:
+#     publish:
+#       uses: JoShMiQueL/gh-actions/.github/workflows/release-publish.yml@main
+#       secrets:
+#         token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+#         env:   ${{ secrets.PROJECT_RELEASE_ENV }}
+#       with:
+#         version: ${{ inputs.version }}
+#         language: rust
+#         node_workdir: launcher/ui
+#         setup-command: |
+#           (Get-Content launcher/src-tauri/Cargo.toml -Raw) -replace '(?m)^version\s*=\s*"[^"]*"', "version = `"${{ env.VERSION }}`"" | Set-Content launcher/src-tauri/Cargo.toml -NoNewline
+#         build-command: cargo build --release -p s1l -p s1l-launcher
+#         artifacts: target/release/s1l-launcher.exe
+#         post-publish-command: ./target/release/s1l.exe pack launcher target/release/s1l-launcher.exe --version ${{ env.VERSION }} --worker-url https://s1l-api.joshmiquel.workers.dev
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Version to release (manual dispatch; ignored on tag push).
+        required: false
+        type: string
+      tag-prefix:
+        description: 'Tag prefix stripped to get the version — "v" → v0.1.4→0.1.4; "" → 0.1.4→0.1.4; "s1l-launcher-v" → s1l-launcher-v0.1.4→0.1.4.'
+        required: false
+        default: "v"
+        type: string
+      runner:
+        description: Runner OS label.
+        required: false
+        default: windows-latest
+        type: string
+      language:
+        description: 'rust | node | go | custom (custom → no toolchain preset; supply everything via setup-command/build-command).'
+        required: false
+        default: custom
+        type: string
+      node_version:
+        description: Node version when node_workdir is set.
+        required: false
+        default: "24"
+        type: string
+      node_workdir:
+        description: Dir with package-lock.json — npm ci + npm run build run here when set (empty → skip frontend).
+        required: false
+        default: ""
+        type: string
+      setup-command:
+        description: 'pwsh run before build (e.g. stamp env.VERSION into Cargo.toml). $env:VERSION + $env:TAG are set.'
+        required: false
+        default: ""
+        type: string
+      build-command:
+        description: pwsh build command.
+        required: true
+        type: string
+      artifacts:
+        description: Newline- or space-separated file paths/globs to attach to the Release.
+        required: true
+        type: string
+      contributors:
+        description: Append `### Contributors` (range authors, first-timers flagged) to the Release body.
+        required: false
+        default: true
+        type: boolean
+      post-publish-command:
+        description: 'pwsh run after attach (e.g. publish self-update pointer). $env:VERSION/$env:TAG set; project env-JSON loaded.'
+        required: false
+        default: ""
+        type: string
+    secrets:
+      token:
+        description: 'PAT for `gh release edit` (contributors) — falls back to github.token if unset.'
+        required: false
+      env:
+        description: 'JSON object of env vars injected into every step ({"KEY":"val",...}) — keeps per-project secrets out of the caller YAML.'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: build + attach + contributors + post-publish
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # contributors needs history to flag first-time committers
+
+      # Load the project's env-JSON into GITHUB_ENV for every later step.
+      - name: Load project env
+        if: ${{ secrets.env != '' }}
+        shell: pwsh
+        env:
+          ENV_JSON: ${{ secrets.env }}
+        run: |
+          ($env:ENV_JSON | ConvertFrom-Json).PSObject.Properties | ForEach-Object {
+            "$($_.Name)=$($_.Value)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          }
+
+      - name: Resolve tag + version
+        id: ver
+        shell: pwsh
+        run: |
+          $prefix = "${{ inputs.tag-prefix }}"
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $tag = "${{ github.ref_name }}"
+            $v = $tag
+            if ($prefix -and $tag.StartsWith($prefix)) { $v = $tag.Substring($prefix.Length) }
+          } else {
+            $v = "${{ inputs.version }}"
+            $tag = "$prefix$v"
+          }
+          "version=$v" | Out-File $env:GITHUB_OUTPUT -Append
+          "tag=$tag"     | Out-File $env:GITHUB_OUTPUT -Append
+          "VERSION=$v"   | Out-File $env:GITHUB_ENV -Append
+          "TAG=$tag"     | Out-File $env:GITHUB_ENV -Append
+          Write-Output "Releasing v$v (tag $tag)"
+
+      - name: Setup Rust
+        if: ${{ inputs.language == 'rust' }}
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        if: ${{ inputs.language == 'rust' }}
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node
+        if: ${{ inputs.node_workdir != '' }}
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.node_workdir }}/package-lock.json
+
+      - name: Build frontend (npm ci + build)
+        if: ${{ inputs.node_workdir != '' }}
+        working-directory: ${{ inputs.node_workdir }}
+        run: |
+          npm ci
+          npm run build
+
+      - name: Version stamp / pre-build
+        if: ${{ inputs.setup-command != '' }}
+        shell: pwsh
+        run: |
+          ${{ inputs.setup-command }}
+
+      - name: Build
+        shell: pwsh
+        run: |
+          ${{ inputs.build-command }}
+
+      # release-please already created the Release with the changelog body —
+      # attach binaries to it. Manual runs: create it if missing.
+      - name: Attach artifacts to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.token || github.token }}
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.ver.outputs.tag }}"
+          $files = "${{ inputs.artifacts }}" -split "[`n ]" | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag @files --clobber
+          } else {
+            Write-Output "no existing release for $tag — creating with auto notes"
+            gh release create $tag --title "v${{ steps.ver.outputs.version }}" --generate-notes @files
+          }
+          exit $LASTEXITCODE
+
+      - name: Contributors section (Release body)
+        if: ${{ inputs.contributors }}
+        uses: JoShMiQueL/gh-actions/.github/actions/contributors@main
+        with:
+          tag: ${{ steps.ver.outputs.tag }}
+          github-token: ${{ secrets.token || github.token }}
+
+      - name: Post-publish
+        if: ${{ inputs.post-publish-command != '' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.token || github.token }}
+        run: |
+          ${{ inputs.post-publish-command }}
