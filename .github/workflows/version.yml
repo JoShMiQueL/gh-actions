@@ -6,7 +6,7 @@ name: Version
 #                  `v1` major tag so callers pin @v1
 #
 # `contributors: false` — a tooling repo doesn't need a Contributors
-# section in its own releases; the reusable still proves itself via the
+# section in its own releases; release.yml still proves itself via the
 # release-please job that runs on every main push.
 #
 # The `major-tag` job keeps the floating major (`v1`, `v0`…) pointing at
