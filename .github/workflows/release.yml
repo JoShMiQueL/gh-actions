@@ -218,16 +218,6 @@ jobs:
         run: |
           ${{ inputs.build-command }}
 
-      # Debug auth once — remove when stable. gh needs GH_TOKEN + a repo it can
-      # resolve; on a tag checkout the remote context is thin.
-      - name: Debug gh auth
-        env:
-          GH_TOKEN: ${{ secrets.token || github.token }}
-        shell: pwsh
-        run: |
-          gh auth status 2>&1 | Select-String -NotMatch "token"
-          gh release list --repo ${{ github.repository }} 2>&1 | Select-Object -First 5
-
       # release-please already created the Release with the changelog body —
       # attach binaries to it. Manual runs: create it if missing.
       - name: Attach artifacts to GitHub Release
