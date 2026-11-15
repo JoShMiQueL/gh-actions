@@ -225,9 +225,11 @@ jobs:
         shell: pwsh
         run: |
           $tag = "${{ steps.ver.outputs.tag }}"
-          $files = "${{ inputs.artifacts }}" -split "[`n ]" | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-          # Fail loudly if an artifact is missing — silently uploading nothing
-          # produces a release with no binaries (the classic empty-release bug).
+          # Normalize to OS-native absolute paths — `gh` on Windows chokes on
+          # `dir/file` glob syntax ("no matches found for 'd'").
+          $files = "${{ inputs.artifacts }}" -split "[`n ]" | ForEach-Object { $_.Trim() } | Where-Object { $_ } | ForEach-Object {
+            (Resolve-Path $_ -ErrorAction SilentlyContinue).Path ?? $_
+          }
           $missing = $files | Where-Object { -not (Test-Path $_) }
           if ($missing) { Write-Error "artifact(s) not found: $($missing -join ', ')"; exit 1 }
           $exists = $false
