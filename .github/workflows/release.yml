@@ -196,8 +196,9 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: ${{ inputs.node_version }}
-          cache: npm
-          cache-dependency-path: ${{ inputs.node_workdir }}/package-lock.json
+          # npm cache only makes sense when there's a lockfile dir to point at.
+          cache: ${{ inputs.node_workdir != '' && 'npm' || '' }}
+          cache-dependency-path: ${{ inputs.node_workdir != '' && format('{0}/package-lock.json', inputs.node_workdir) || '' }}
 
       - name: Build frontend (npm ci + build)
         if: ${{ inputs.node_workdir != '' }}
