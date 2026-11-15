@@ -1,78 +1,72 @@
 name: Release
 
 # ============================================================================
-#  One reusable "tag → release" pipeline for every project. A tag (from
-#  release-please merging its Release PR, or a manual `git tag vX.Y.Z`) runs:
+#  One reusable release pipeline for every project. A caller listens on both
+#  main pushes and tags — this workflow runs ONE of its two jobs:
 #
-#      checkout → load env-JSON → resolve version → toolchain presets →
-#      [frontend build] → [version stamp] → build → attach binaries →
-#      append "### Contributors" to the Release body → [post-publish hook]
+#    push to main ──────────────► release-please job (opens/updates the
+#                                 Release PR; merging it creates tag+Release)
+#    tag push / manual dispatch ► release job: checkout → env → toolchain →
+#                                 [frontend] → [version stamp] → build →
+#                                 attach → [release-notes] → Contributors →
+#                                 [post-publish]
 #
-#  The CHANGELOG.md in the repo stays clean — release-please owns it and it
-#  holds ONLY categorized changes (Features/Fixes). Contributors live in the
-#  Release body (the GitHub page), never in the file — the clap model.
-#
-#  ── Minimal caller (any project) ──────────────────────────────────────────
+#  ── Minimal caller — THE ONLY file a project needs ─────────────────────────
 #    on:
-#      push: { tags: ["v*.*.*"] }
-#      workflow_dispatch: { inputs: { version: { required: true } } }
-#    permissions: { contents: write }
+#      push:
+#        branches: [main]        # release-please accumulates conventional commits
+#        tags: ["v*.*.*"]        # build+publish on tag
+#      workflow_dispatch:
+#        inputs: { version: { required: false } }   # manual release (skips rp)
+#    permissions:
+#      contents: write           # tag + Release + upload
+#      pull-requests: write      # release-please opens the Release PR
 #    jobs:
 #      release:
 #        uses: JoShMiQueL/gh-actions/.github/workflows/release.yml@main
 #        secrets:
-#          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}   # for `gh release edit`
-#          env-json:   ${{ secrets.PROJECT_RELEASE_ENV }}    # JSON {"KEY":"val",...}
-#                                                         # (renamed — bare 'env' is a reserved name)
+#          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}   # PAT — bot tags must re-trigger
+#          env-json: ${{ secrets.PROJECT_RELEASE_ENV }} # JSON {"KEY":"val",...} (optional)
 #        with:
-#          toolchain: go
-#          build-command: go build -o dist/app.exe ./cmd/app
-#          artifacts: dist/app.exe
+#          toolchain: go          # or "rust node@24", "python@3.12", …
+#          build-command: go build -o dist/app ./cmd/app
+#          artifacts: dist/app
 #
-#  ── Hooks (all optional, all pwsh, all see $env:VERSION + $env:TAG) ────────
-#    IMPORTANT: `with:` inputs are evaluated BEFORE the reusable runs — GitHub
-#    context `${{ env.VERSION }}` does NOT exist there (env isn't set yet).
-#    Use pwsh `$env:VERSION`/`$env:TAG` inside the hook body instead — the
-#    Resolve step exports them to GITHUB_ENV, so the hook's pwsh sees them.
-#    setup-command        runs pre-build — e.g. stamp $env:VERSION into
-#                         Cargo.toml / package.json, codegen, pip install.
-#    post-publish-command runs after attach — e.g. publish a self-update
-#                         pointer to R2/S3, bump a "latest" file, notify.
-#
-#  ── Secrets ───────────────────────────────────────────────────────────────
-#    token    PAT used for `gh release edit` (contributors body). Falls back to
-#             github.token when unset — enough for same-repo edits.
-#    env-json One JSON object carrying the project's whole env — keeps secrets
-#             out of the caller YAML. `{"API_KEY":"y","BUCKET":"x"}` is injected
-#             into every step via `Load project env`. Named `env-json` because
+#  ── Secrets ────────────────────────────────────────────────────────────────
+#    token    PAT — release-please + `gh release edit`. A bot-pushed tag only
+#             re-triggers this workflow if a PAT pushed it (GITHUB_TOKEN
+#             doesn't cascade). Falls back to github.token — enough when tags
+#             come from manual `git tag`.
+#    env-json One JSON object = the project's env, injected into every step
+#             with each value `::add-mask::`ed first. Named env-json because
 #             bare `env` is a reserved secret name in workflow_call.
 #
-#  ── Per-input reference ───────────────────────────────────────────────────
-#    version           manual-dispatch version (ignored on tag push)
-#    tag-prefix        strip this from the tag → version ("v" default; "" for
-#                      bare `0.1.4`; "pkg-v" for monorepo `pkg-v0.1.4`)
-#    runner            windows-latest | ubuntu-latest | macos-latest
-#    toolchain         space-separated builtins → their setup action: rust
-#                      (toolchain+cache) | node | go | dotnet (C#/F#) | python |
-#                      bun — or `custom` (none; drive it via setup-command or an
-#                      earlier `uses:` in your workflow — C++ MSVC, zig, java…)
-#    node_version      node for the frontend step (default 24)
-#    node_workdir      dir with package.json → `npm ci|install` + `npm run build`
-#                      (npm install when no lockfile); empty skips the frontend
-#    artifacts         newline/space-separated paths or globs attached to the
-#                      Release — shippable binaries only; fails if any missing
-#    contributors      bool — append the Contributors section (default true)
-#    prerelease        bool — mark the Release pre-release; AUTO on `-` in the
-#                      version (v0.2.0-beta, -rc.1) regardless of this input
-#    draft             bool — create the Release as a draft
+#  ── Hooks — all optional, all run in `shell` (bash default), all see ────────
+#     $VERSION + $TAG exported to GITHUB_ENV.
+#     IMPORTANT: `with:` inputs evaluate BEFORE the reusable runs — GitHub's
+#     `${{ env.VERSION }}` does NOT exist there. Use the SHELL variable inside
+#     the hook body: `$VERSION` (bash) / `$env:VERSION` (pwsh).
+#    setup-command        after version-stamp, before build — codegen, deps.
+#    post-publish-command after attach — publish a self-update pointer, notify.
+#
+#  ── Inputs (grouped) ────────────────────────────────────────────────────────
+#    trigger   version, tag-prefix, runner, shell
+#    toolchain toolchain (name[@version] tokens), node_workdir
+#    version   version-bump (auto|none), version-files
+#    build     setup-command, build-command, artifacts
+#    release   release-title, release-notes, contributors, prerelease, draft
+#    hooks     post-publish-command
+#    rp        release-please, rp-config-file, rp-manifest-file
 # ============================================================================
 
 on:
   workflow_call:
     inputs:
+      # ── trigger / resolve ────────────────────────────────────────────────
       version:
-        description: "Release version (manual dispatch only; ignored on tag push)."
+        description: "Manual-dispatch version — skips release-please entirely and releases this version directly. Ignored on tag/branch push."
         required: false
+        default: ""
         type: string
       tag-prefix:
         description: "Tag prefix stripped to get the version — 'v'→v0.1.4→0.1.4, ''→0.1.4→0.1.4, 'pkg-v'→pkg-v0.1.4→0.1.4."
@@ -80,138 +74,218 @@ on:
         default: "v"
         type: string
       runner:
-        description: "Runner OS label."
+        description: "Runner OS label — windows-latest | ubuntu-latest | macos-latest | any self-hosted label."
         required: false
         default: windows-latest
         type: string
+      shell:
+        description: "Shell the hook commands (setup/build/post-publish) run in — bash | pwsh | sh | cmd | python. Internal steps always use bash (Git Bash on Windows). Choose pwsh when your hooks need PowerShell syntax."
+        required: false
+        default: bash
+        type: string
+      # ── toolchain ────────────────────────────────────────────────────────
       toolchain:
         description: >-
-          Build toolchain(s) to provision — space/comma/newline-separated
-          tokens, or "custom" (none — drive it via setup-command). Built-in
-          presets (each maps to its standard setup action):
-            rust    → dtolnay/rust-toolchain + Swatinem/rust-cache
-            node    → actions/setup-node
-            go      → actions/setup-go
-            dotnet  → actions/setup-dotnet  (C# / F#)
-            python  → actions/setup-python
-            bun     → oven-sh/setup-bun
-          Multiple: "go node", "rust dotnet". For anything else (C/C++ MSVC,
-          zig, java, flutter, deno…) use `custom` + `setup-command` to run the
-          stack's own installer, OR put a `uses: owner/setup-*` step in your
-          own workflow before this reusable call (cleanest for exotic stacks —
-          the reusable never had to know about them).
+          Toolchain(s) to provision — space/comma-separated `name[@version]`
+          tokens, or "custom" (none — install via setup-command or an earlier
+          `uses:` in your own workflow). Built-ins:
+            rust    → dtolnay/rust-toolchain + Swatinem/rust-cache  (@stable)
+            node    → actions/setup-node                            (@lts/*)
+            go      → actions/setup-go                              (@stable)
+            dotnet  → actions/setup-dotnet   (C# / F#)              (@8.x)
+            python  → actions/setup-python                          (@3.x)
+            bun     → oven-sh/setup-bun                             (@latest)
+          Versions are inline: "rust@1.75.0 python@3.12 go@1.22". Omit @ to
+          take the default shown. Multiple toolchains: "rust node@24".
+          Anything else (C++ MSVC, zig, java, flutter, deno…) = `custom` +
+          setup-command runs the installer, OR a `uses:` step before this
+          reusable call — the reusable never has to know about them.
         required: false
         default: custom
         type: string
-      node_version:
-        description: "Node version for the frontend/npm step."
-        required: false
-        default: "24"
-        type: string
       node_workdir:
-        description: "Dir with package.json — `npm ci` (or `npm install` when no lockfile) + `npm run build` run here; empty skips the frontend."
+        description: "Dir with package.json — `npm ci` (or `npm install` when no lockfile) + `npm run build` run here, and its package.json gets version-stamped. Implies the node toolchain (version via `node@x` token, else lts/*). Empty skips the frontend."
         required: false
         default: ""
         type: string
+      # ── version stamp ────────────────────────────────────────────────────
+      version-bump:
+        description: >-
+          auto (default): stamp $VERSION into the canonical manifest of each
+          active toolchain — root Cargo.toml (rust), package.json (node/bun,
+          root + node_workdir), pyproject.toml (python). Replacement = first
+          semver found in the file, so quotes/tags around it are preserved.
+          none: skip stamping — set the version yourself in setup-command.
+        required: false
+        default: auto
+        type: string
+      version-files:
+        description: "Extra files to stamp $VERSION into (one path per line) — tauri.conf.json, *.csproj, app.spec, custom manifests… Same rule: first semver in the file is replaced."
+        required: false
+        default: ""
+        type: string
+      # ── build ────────────────────────────────────────────────────────────
       setup-command:
-        description: "pwsh run before build (version stamp, codegen, deps). $env:VERSION + $env:TAG set."
+        description: "Runs after version-stamp, before build — codegen, extra deps, patches. Shell = `shell` input; sees $VERSION + $TAG."
         required: false
         default: ""
         type: string
       build-command:
-        description: "pwsh build command — the release build."
+        description: "The release build. Shell = `shell` input; sees $VERSION + $TAG."
         required: true
         type: string
       artifacts:
-        description: "Newline/space-separated file paths or globs attached to the Release — shippable binaries only."
+        description: "Files/globs to attach to the Release, one per line — shippable binaries only. Missing files fail the run loudly."
         required: true
         type: string
+      # ── release body ─────────────────────────────────────────────────────
+      release-title:
+        description: "Release title template — '{version}' and '{tag}' expand (e.g. 'MyApp {version}', '{tag} — stable'). Empty keeps release-please's title (or 'v{version}' on manual creates)."
+        required: false
+        default: ""
+        type: string
+      release-notes:
+        description: "Extra markdown appended to the Release body — after the changelog, before Contributors. For a fully custom body use post-publish-command + `gh release edit`."
+        required: false
+        default: ""
+        type: string
       contributors:
-        description: "Append `### Contributors` (range authors, first-timers flagged) to the Release body."
+        description: "Append `### Contributors` to the Release body — authors of prev_tag..tag, first-timers flagged `*(new contributor)*`."
         required: false
         default: true
         type: boolean
       prerelease:
-        description: "Force-mark the Release as a pre-release. Auto: a tag/version containing '-' (v0.2.0-beta, -rc.1) is always treated as pre-release regardless."
+        description: "Mark the Release a pre-release. Auto: any '-' in the version (v0.2.0-beta, -rc.1) is always treated as pre-release."
         required: false
         default: false
         type: boolean
       draft:
-        description: "Create the Release as a draft (manual review before publishing). release-please draft releases are edited in place."
+        description: "Create/update the Release as a draft."
         required: false
         default: false
         type: boolean
+      # ── hooks / release-please ───────────────────────────────────────────
       post-publish-command:
-        description: "pwsh run after attach (publish pointer, notify). $env:VERSION/$env:TAG set; env-JSON loaded."
+        description: "Runs after attach+contributors — publish a self-update pointer, bump a 'latest' file, notify. Shell = `shell` input; sees $VERSION + $TAG + env-json vars."
         required: false
         default: ""
         type: string
+      release-please:
+        description: "Run the embedded release-please job on branch pushes (opens/updates the Release PR). Set false if you drive release-please from your own workflow."
+        required: false
+        default: true
+        type: boolean
+      rp-config-file:
+        description: "release-please config path."
+        required: false
+        default: release-please-config.json
+        type: string
+      rp-manifest-file:
+        description: "release-please manifest path."
+        required: false
+        default: .release-please-manifest.json
+        type: string
     secrets:
       token:
-        description: "PAT for `gh release edit` — falls back to github.token if unset."
+        description: "PAT — release-please pushes tags + `gh release edit`. Falls back to github.token."
         required: false
       env-json:
-        description: "JSON object of env vars injected into every step — keeps per-project secrets out of the caller YAML."
+        description: "JSON object of env vars injected (masked) into every step — keeps per-project secrets out of the caller YAML."
         required: false
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
+  # ── Job 1: branch push → release-please maintains the Release PR ──────────
+  please:
+    name: release-please
+    if: ${{ inputs.release-please && github.ref_type == 'branch' && inputs.version == '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          config-file: ${{ inputs.rp-config-file }}
+          manifest-file: ${{ inputs.rp-manifest-file }}
+          token: ${{ secrets.token || github.token }}
+
+  # ── Job 2: tag push / manual dispatch → build + attach + publish ─────────
   release:
-    name: resolve → build → attach → contributors → post-publish
+    name: release
+    if: ${{ github.ref_type == 'tag' || inputs.version != '' }}
     runs-on: ${{ inputs.runner }}
     env:
-      # secrets can't sit in `if:` conditions — map the env-JSON here so steps
-      # can test `env.PROJ_ENV != ''` instead.
+      # secrets can't sit in `if:` — map env-JSON here so steps can test
+      # `env.PROJ_ENV != ''` instead.
       PROJ_ENV: ${{ secrets.env-json }}
     steps:
       - uses: actions/checkout@v5
         with:
-          fetch-depth: 0   # contributors needs full history to flag first-timers
+          fetch-depth: 0   # Contributors needs full history to flag first-timers
 
       - name: Load project env
         if: ${{ env.PROJ_ENV != '' }}
-        shell: pwsh
+        shell: bash
+        env:
+          PROJ_ENV_RAW: ${{ secrets.env-json }}
         run: |
           # Mask every value BEFORE injecting — env vars otherwise echo in the
-          # "Environment considered" / step-env dump. add-mask makes GitHub
-          # scrub them from logs. Values with newlines are masked per-line.
-          ($env:PROJ_ENV | ConvertFrom-Json).PSObject.Properties | ForEach-Object {
-            $v = "$($_.Value)"
-            foreach ($line in ($v -split "`r?`n")) { if ($line) { Write-Output "::add-mask::$line" } }
-            "$($_.Name)=$v" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          }
+          # per-step "env:" dump. add-mask makes GitHub scrub them from logs.
+          echo "$PROJ_ENV_RAW" | jq -r '.[]' | while IFS= read -r v; do
+            while IFS= read -r line; do
+              [ -n "$line" ] && echo "::add-mask::$line"
+            done <<< "$v"
+          done
+          echo "$PROJ_ENV_RAW" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
 
-      # tag → version. `v0.1.4`→0.1.4, `pkg-v0.1.4`→0.1.4 (prefix "pkg-v"),
-      # `0.1.4`→0.1.4 (prefix ""). Manual dispatch synthesizes tag = prefix+ver.
+      # tag → version. v0.1.4→0.1.4, pkg-v0.1.4→0.1.4 (prefix "pkg-v"),
+      # 0.1.4→0.1.4 (prefix ""). Manual dispatch synthesizes tag = prefix+ver.
       - name: Resolve tag + version
         id: ver
-        shell: pwsh
+        shell: bash
+        env:
+          TAG_PREFIX: ${{ inputs.tag-prefix }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          $prefix = "${{ inputs.tag-prefix }}"
-          if ("${{ github.ref_type }}" -eq "tag") {
-            $tag = "${{ github.ref_name }}"
-            $v = $tag
-            if ($prefix -and $tag.StartsWith($prefix)) { $v = $tag.Substring($prefix.Length) }
-          } else {
-            $v = "${{ inputs.version }}"
-            $tag = "$prefix$v"
-          }
-          "version=$v" | Out-File $env:GITHUB_OUTPUT -Append
-          "tag=$tag"     | Out-File $env:GITHUB_OUTPUT -Append
-          "VERSION=$v"   | Out-File $env:GITHUB_ENV -Append
-          "TAG=$tag"     | Out-File $env:GITHUB_ENV -Append
-          Write-Output "Releasing v$v (tag $tag)"
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            tag="$GITHUB_REF_NAME"
+            v="$tag"
+            if [ -n "$TAG_PREFIX" ] && [[ "$tag" == "$TAG_PREFIX"* ]]; then
+              v="${tag#$TAG_PREFIX}"
+            fi
+          else
+            v="$INPUT_VERSION"
+            tag="${TAG_PREFIX}${v}"
+          fi
+          [ -z "$v" ] && { echo "::error::no version resolved — pass 'version' on dispatch or push a tag"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag"     >> "$GITHUB_OUTPUT"
+          { echo "VERSION=$v"; echo "TAG=$tag"; } >> "$GITHUB_ENV"
+          echo "Releasing v$v (tag $tag)"
 
-      # ── Toolchain — built-in presets only ─────────────────────────────────
-      # `toolchain` may hold several tokens: "rust", "go node", "rust dotnet".
-      # Built-ins expand to their standard setup action. Anything else (C++
-      # MSVC, zig, java, flutter…) = `custom` + the caller provisions it via
-      # setup-command or an earlier `uses:` in its own workflow.
+      # Parse `toolchain` tokens `name[@ver]` → outputs `<name>-version` used by
+      # the setup actions below. Missing @ver → the preset's default.
+      - name: Parse toolchain
+        id: tc
+        shell: bash
+        env:
+          TOOLCHAIN: ${{ inputs.toolchain }}
+        run: |
+          declare -A def=( [rust]=stable [go]=stable [python]="3.x" [dotnet]="8.x" [bun]=latest [node]="lts/*" )
+          for tok in $TOOLCHAIN; do
+            name="${tok%%@*}"
+            ver="${tok#*@}"; [ "$ver" = "$tok" ] && ver=""
+            [ -z "$ver" ] && ver="${def[$name]:-latest}"
+            echo "${name}-version=${ver}" >> "$GITHUB_OUTPUT"
+          done
+
+      # ── Toolchain presets (built-ins only — `custom` provisions itself) ──
       - name: Setup Rust
         if: ${{ contains(inputs.toolchain, 'rust') }}
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.tc.outputs['rust-version'] || 'stable' }}
 
       - name: Rust cache
         if: ${{ contains(inputs.toolchain, 'rust') }}
@@ -221,51 +295,93 @@ jobs:
         if: ${{ contains(inputs.toolchain, 'go') }}
         uses: actions/setup-go@v6
         with:
-          go-version: stable
+          go-version: ${{ steps.tc.outputs['go-version'] || 'stable' }}
 
       - name: Setup Python
         if: ${{ contains(inputs.toolchain, 'python') }}
         uses: actions/setup-python@v6
         with:
-          python-version: "3.x"
+          python-version: ${{ steps.tc.outputs['python-version'] || '3.x' }}
 
       - name: Setup .NET (C#/F#)
         if: ${{ contains(inputs.toolchain, 'dotnet') }}
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: "8.x"
+          dotnet-version: ${{ steps.tc.outputs['dotnet-version'] || '8.x' }}
 
       - name: Setup Bun
         if: ${{ contains(inputs.toolchain, 'bun') }}
         uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ steps.tc.outputs['bun-version'] || 'latest' }}
 
       - name: Setup Node
         if: ${{ contains(inputs.toolchain, 'node') || inputs.node_workdir != '' }}
         uses: actions/setup-node@v5
         with:
-          node-version: ${{ inputs.node_version }}
-
-      # Non-builtin toolchains: the caller handles them — either an earlier
-      # `uses:` step in its own workflow (before this reusable job) or
-      # `setup-command` runs the installer. The reusable never has to know.
+          node-version: ${{ steps.tc.outputs['node-version'] || 'lts/*' }}
 
       # npm ci needs package-lock.json; fall back to npm install when absent.
-      - name: Build frontend (npm ci|install + build)
+      - name: Build frontend
         if: ${{ inputs.node_workdir != '' }}
         working-directory: ${{ inputs.node_workdir }}
-        shell: pwsh
+        shell: bash
         run: |
-          if (Test-Path package-lock.json) { npm ci } else { npm install }
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
           npm run build
 
-      - name: Version stamp / pre-build
+      # Stamp $VERSION into the toolchain's canonical manifest (root only,
+      # predictable) + any `version-files`. First semver in the file is
+      # replaced — surrounding quotes/tags are preserved, so it works for
+      # TOML/JSON/XML/INI alike. `none` or a stack we don't know → caller
+      # handles it in setup-command.
+      - name: Stamp version
+        if: ${{ inputs.version-bump == 'auto' }}
+        shell: bash
+        env:
+          TOOLCHAIN: ${{ inputs.toolchain }}
+          NODE_WORKDIR: ${{ inputs.node_workdir }}
+          VERSION_FILES: ${{ inputs.version-files }}
+        run: |
+          stamp() {
+            local f="$1"
+            if [ -f "$f" ]; then
+              sed -i -E "0,/[0-9]+\.[0-9]+\.[0-9]+/s//$VERSION/" "$f"
+              echo "stamped $f → $VERSION"
+            else
+              echo "::warning::version-file not found, skipped: $f"
+            fi
+          }
+          for tok in $TOOLCHAIN; do
+            case "${tok%%@*}" in
+              rust)
+                # A root Cargo.toml that is a [workspace] isn't the package —
+                # the real manifest lives in a member dir. Skip it; the caller
+                # lists the member Cargo.toml in version-files.
+                if [ -f Cargo.toml ] && grep -q '^\[workspace\]' Cargo.toml; then
+                  echo "root Cargo.toml is a workspace — list the member manifest in version-files"
+                else
+                  stamp Cargo.toml
+                fi ;;
+              node|bun) stamp package.json ;;
+              python) stamp pyproject.toml ;;
+              # go has no version file; dotnet uses .csproj → version-files
+            esac
+          done
+          [ -n "$NODE_WORKDIR" ] && stamp "$NODE_WORKDIR/package.json"
+          while IFS= read -r f; do
+            f="$(echo "$f" | tr -d '\r' | xargs)"
+            [ -n "$f" ] && stamp "$f"
+          done <<< "$VERSION_FILES"
+
+      - name: Setup (pre-build hook)
         if: ${{ inputs.setup-command != '' }}
-        shell: pwsh
+        shell: ${{ inputs.shell }}
         run: |
           ${{ inputs.setup-command }}
 
       - name: Build
-        shell: pwsh
+        shell: ${{ inputs.shell }}
         run: |
           ${{ inputs.build-command }}
 
@@ -274,86 +390,102 @@ jobs:
       - name: Attach artifacts to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.token || github.token }}
-        shell: pwsh
+          REPO: ${{ github.repository }}
+          ARTIFACTS: ${{ inputs.artifacts }}
+          RELEASE_TITLE: ${{ inputs.release-title }}
+          PRERELEASE_IN: ${{ inputs.prerelease }}
+          DRAFT_IN: ${{ inputs.draft }}
+          VER: ${{ steps.ver.outputs.version }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        shell: bash
         run: |
-          $tag = "${{ steps.ver.outputs.tag }}"
-          $patterns = "${{ inputs.artifacts }}" -split "[`n ]" | ForEach-Object { $_.Trim() } | Where-Object { $_ }
-          # `gh release upload` on Windows glob-expands the arg itself, so
-          # `dir/file` or an absolute `D:\...` dies with "no matches found".
-          # Resolve each pattern to files and pass just the BASENAME while
-          # sitting in the file's directory — the only form gh can't glob-mangle.
-          $toUpload = @()
-          foreach ($p in $patterns) {
-            $resolved = Get-Item $p -ErrorAction SilentlyContinue
-            if (-not $resolved) { Write-Error "artifact not found: $p"; exit 1 }
-            $toUpload += $resolved
-          }
-          $repo = "${{ github.repository }}"
-          # Pre-release auto-detect: a '-' in the version (v0.2.0-beta, -rc.1)
-          # OR the explicit `prerelease` input → mark the release pre-release.
-          $isPre = "${{ inputs.prerelease }}" -eq "true" -or "${{ steps.ver.outputs.version }}" -match "-"
-          $draftFlag = @(); if ("${{ inputs.draft }}" -eq "true") { $draftFlag += "--draft" }
-          $preFlag   = @(); if ($isPre) { $preFlag += "--prerelease" }
+          set -e
+          is_pre=false
+          [ "$PRERELEASE_IN" = "true" ] && is_pre=true
+          [[ "$VER" == *-* ]] && is_pre=true
+          flags=()
+          $is_pre && flags+=(--prerelease)
+          [ "$DRAFT_IN" = "true" ] && flags+=(--draft)
 
-          $exists = $false
-          try { gh release view $tag --repo $repo | Out-Null; $exists = ($LASTEXITCODE -eq 0) } catch { $exists = $false }
-          if (-not $exists) {
-            Write-Output "no existing release for $tag — creating one (plain notes)"
-            gh release create $tag --repo $repo --title "v${{ steps.ver.outputs.version }}" --notes "Release ${{ steps.ver.outputs.version }}" @preFlag @draftFlag
-            if ($LASTEXITCODE -ne 0) { Write-Error "gh release create failed"; exit $LASTEXITCODE }
-            Start-Sleep -Seconds 3   # let the API settle before upload
-          } elseif ($isPre -or $draftFlag) {
-            # release-please may have created the release already — re-flag it
-            # so a beta tag isn't shipped as a "Latest" stable release.
-            gh release edit $tag --repo $repo @preFlag @draftFlag
-          }
-          foreach ($f in $toUpload) {
-            Push-Location $f.Directory.FullName
-            gh release upload $tag $f.Name --clobber --repo $repo
-            $code = $LASTEXITCODE
-            Pop-Location
-            if ($code -ne 0) { Write-Error "gh release upload failed for $($f.Name)"; exit $code }
-          }
+          title="${RELEASE_TITLE//\{version\}/$VER}"
+          title="${title//\{tag\}/$TAG}"
+          [ -z "$title" ] && title="v$VER"
 
-      # Contributors live in the Release body (the page), never in CHANGELOG.md.
+          if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "no existing release for $TAG — creating one (plain notes)"
+            gh release create "$TAG" --repo "$REPO" --title "$title" --notes "Release $VER" "${flags[@]}"
+            sleep 3   # let the API settle before upload
+          else
+            [ "$is_pre" = true ] || [ "$DRAFT_IN" = "true" ] && \
+              gh release edit "$TAG" --repo "$REPO" "${flags[@]}" || true
+            # Apply a caller-supplied title onto an existing release too.
+            [ -n "$RELEASE_TITLE" ] && gh release edit "$TAG" --repo "$REPO" --title "$title"
+          fi
+
+          # `gh release upload` glob-mangles path args on Windows — upload the
+          # BASENAME from inside the file's dir, the only form it can't break.
+          while IFS= read -r pat; do
+            pat="$(echo "$pat" | tr -d '\r' | xargs)"
+            [ -z "$pat" ] && continue
+            matched=0
+            for f in $pat; do   # intentional unquoted glob expansion
+              [ -e "$f" ] || continue
+              matched=1
+              (cd "$(dirname "$f")" && gh release upload "$TAG" "$(basename "$f")" --clobber --repo "$REPO")
+            done
+            [ "$matched" = 0 ] && { echo "::error::artifact not found: $pat"; exit 1; }
+          done <<< "$ARTIFACTS"
+
+      - name: Append release notes
+        if: ${{ inputs.release-notes != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.token || github.token }}
+          REPO: ${{ github.repository }}
+          NOTES: ${{ inputs.release-notes }}
+        shell: bash
+        run: |
+          gh release view "$TAG" --repo "$REPO" --json body --jq .body > /tmp/body.md
+          printf '\n\n%s\n' "$NOTES" >> /tmp/body.md
+          gh release edit "$TAG" --repo "$REPO" --notes-file /tmp/body.md
+          echo "appended release-notes to $TAG"
+
+      # Contributors live in the Release body (the page), never CHANGELOG.md.
       # Range = prev_tag..this_tag; an author is "(new contributor)" if they
-      # never committed before the previous tag. Reads `git log %an` — works on
-      # direct commits, no PRs needed.
-      - name: Append Contributors section to Release body
+      # never committed before the previous tag. Reads `git log %an`.
+      - name: Append Contributors section
         if: ${{ inputs.contributors }}
         env:
           GH_TOKEN: ${{ secrets.token || github.token }}
-        shell: pwsh
+          REPO: ${{ github.repository }}
+        shell: bash
         run: |
-          $tag = "${{ steps.ver.outputs.tag }}"
-          $prev = git describe --tags --abbrev=0 "$tag^" 2>$null
-          $range = if ($prev) { "$prev..$tag" } else { $tag }
-          Write-Output "contributor range: $range (prev: $($prev -or 'none'))"
+          prev="$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)"
+          if [ -n "$prev" ]; then range="$prev..$TAG"; else range="$TAG"; fi
+          echo "contributor range: $range (prev: ${prev:-none})"
 
-          $rangeAuthors = git log $range --format='%an' 2>$null | Where-Object { $_ } | Sort-Object -Unique
-          if (-not $rangeAuthors) { Write-Output "no authors in range"; exit 0 }
+          mapfile -t authors < <(git log "$range" --format='%an' 2>/dev/null | sort -u | grep -v '^$')
+          [ ${#authors[@]} -eq 0 ] && { echo "no authors in range"; exit 0; }
 
-          $priorAuthors = @()
-          if ($prev) { $priorAuthors = git log "$prev" --format='%an' 2>$null | Sort-Object -Unique }
+          prior=""
+          [ -n "$prev" ] && prior="$(git log "$prev" --format='%an' | sort -u)"
 
-          $section = "`n`n### Contributors`n`n"
-          foreach ($a in $rangeAuthors) {
-            $isNew = $prev -and ($priorAuthors -notcontains $a)
-            $badge = if ($isNew) { " *(new contributor)*" } else { "" }
-            $section += "- $a$badge`n"
-          }
-          $section = $section.TrimEnd()
+          section=""
+          for a in "${authors[@]}"; do
+            badge=""
+            if [ -n "$prev" ] && ! grep -qxF "$a" <<< "$prior"; then
+              badge=" *(new contributor)*"
+            fi
+            section+="- $a$badge"$'\n'
+          done
 
-          $bodyFile = New-TemporaryFile
-          gh release view $tag --repo ${{ github.repository }} --json body --jq .body | Out-File $bodyFile -Encoding utf8
-          Add-Content $bodyFile "`n$section`n"
-          gh release edit $tag --repo ${{ github.repository }} --notes-file $bodyFile
-          Remove-Item $bodyFile -ErrorAction SilentlyContinue
-          Write-Output "appended Contributors to $tag"
+          gh release view "$TAG" --repo "$REPO" --json body --jq .body > /tmp/body.md
+          printf '\n\n### Contributors\n\n%s' "$section" >> /tmp/body.md
+          gh release edit "$TAG" --repo "$REPO" --notes-file /tmp/body.md
+          echo "appended Contributors to $TAG"
 
       - name: Post-publish
         if: ${{ inputs.post-publish-command != '' }}
-        shell: pwsh
+        shell: ${{ inputs.shell }}
         env:
           GH_TOKEN: ${{ secrets.token || github.token }}
         run: |
