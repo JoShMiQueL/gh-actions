@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/JoShMiQueL/gh-actions/compare/v1.0.0...v1.1.0) (2026-11-15)
+
+
+### Features
+
+* self-versioning live — PAT configured, validating tag re-trigger + floating major ([73ed9be](https://github.com/JoShMiQueL/gh-actions/commit/73ed9bebc6a9245ea5e2051a9d0f18f11022fcd7))
+
 ## 1.0.0 (2026-11-15)
 
 
