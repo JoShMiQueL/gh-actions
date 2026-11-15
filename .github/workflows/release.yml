@@ -90,6 +90,9 @@ on:
           stack's own installer, OR put a `uses: owner/setup-*` step in your
           own workflow before this reusable call (cleanest for exotic stacks —
           the reusable never had to know about them).
+        required: false
+        default: custom
+        type: string
       node_version:
         description: "Node version for the frontend/npm step."
         required: false
