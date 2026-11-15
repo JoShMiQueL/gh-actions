@@ -234,12 +234,12 @@ jobs:
           if ($missing) { Write-Error "artifact(s) not found: $($missing -join ', ')"; exit 1 }
           $exists = $false
           try { gh release view $tag | Out-Null; $exists = $true } catch { $exists = $false }
-          if ($exists) {
-            gh release upload $tag @files --clobber
-          } else {
-            Write-Output "no existing release for $tag — creating with auto notes"
-            gh release create $tag --title "v${{ steps.ver.outputs.version }}" --generate-notes @files
+          if (-not $exists) {
+            Write-Output "no existing release for $tag — creating empty (notes auto)"
+            gh release create $tag --title "v${{ steps.ver.outputs.version }}" --generate-notes
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
+          gh release upload $tag @files --clobber
           exit $LASTEXITCODE
 
       # Contributors live in the Release body (the page), never in CHANGELOG.md.
