@@ -83,5 +83,14 @@ jobs:
              || gh api "repos/$REPO/git/refs" --method POST -f ref="refs/tags/$major" -f sha="$sha" 2>/dev/null; then
             echo "moved $major → $tag"
           else
-            echo "::warning::couldn't move $major — RELEASE_PLEASE_TOKEN needs 'workflows' permission (fine-grained PAT) when the commit touches .github/workflows"
+            # no annotation (they're noise) — the note lands on the run's
+            # Summary page instead, next to the job list.
+            {
+              echo "### ⚠️ floating major not moved"
+              echo "\`$major\` still points at the previous release. \`RELEASE_PLEASE_TOKEN\`"
+              echo "needs a **fine-grained PAT with the \`workflows\` permission** — GITHUB_TOKEN"
+              echo "and OAuth tokens are hard-blocked whenever the tagged commit touches"
+              echo "\`.github/workflows/*\`. Once the secret has it, this job moves \`$major\` itself."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "couldn't move $major — see run summary (token lacks 'workflows' permission)"
           fi
