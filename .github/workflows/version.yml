@@ -8,6 +8,10 @@ name: Version
 # `contributors: false` — a tooling repo doesn't need a Contributors
 # section in its own releases; the reusable still proves itself via the
 # release-please job that runs on every main push.
+#
+# The `major-tag` job keeps the floating major (`v1`, `v0`…) pointing at
+# the newest tag — that's the ref production callers pin (`uses: ...@v1`)
+# while the exact tag stays for pinning/audit.
 on:
   push:
     branches: [main]
@@ -31,3 +35,29 @@ jobs:
       version: ${{ inputs.version }}
       contributors: false
       release-please: true
+
+  # Floating major tag — production callers pin @v1, this keeps it fresh.
+  # Only runs when a real version tag lands (not on branch pushes or
+  # manual dispatch tags like 0.0.0-test which carry no release weight).
+  major-tag:
+    if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Move major tag to this release
+        env:
+          GH_TOKEN: ${{ secrets.token || github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          tag="$GITHUB_REF_NAME"
+          # tag must look like a version tag — guard against junk tags
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]] || { echo "not a version tag: $tag"; exit 0; }
+          major="${tag%%.*}"                       # v1.2.3 → v1
+          # skip prereleases — don't move v1 onto a beta
+          [[ "$tag" == *-* ]] && { echo "prerelease $tag — major tag stays"; exit 0; }
+          echo "moving $major → $tag"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -fa "$major" "$tag" -m "floating major → $tag"
+          git push -f origin "refs/tags/$major"
