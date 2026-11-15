@@ -228,19 +228,17 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: ${{ inputs.node_version }}
-          # npm cache only makes sense when there's a lockfile dir to point at.
-          cache: ${{ inputs.node_workdir != '' && 'npm' || '' }}
-          cache-dependency-path: ${{ inputs.node_workdir != '' && format('{0}/package-lock.json', inputs.node_workdir) || '' }}
 
       # Non-builtin toolchains: the caller handles them — either an earlier
       # `uses:` step in its own workflow (before this reusable job) or
       # `setup-command` runs the installer. The reusable never has to know.
 
-      - name: Build frontend (npm ci + build)
+      # npm ci needs package-lock.json; fall back to npm install when absent.
+      - name: Build frontend (npm ci|install + build)
         if: ${{ inputs.node_workdir != '' }}
         working-directory: ${{ inputs.node_workdir }}
         run: |
-          npm ci
+          if (Test-Path package-lock.json) { npm ci } else { npm install }
           npm run build
 
       - name: Version stamp / pre-build
