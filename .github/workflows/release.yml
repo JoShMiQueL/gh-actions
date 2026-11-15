@@ -73,11 +73,22 @@ on:
         required: false
         default: windows-latest
         type: string
-      language:
-        description: "rust | node | go | dotnet | python | custom — picks the toolchain preset (custom = none; drive it all via setup/build-command)."
-        required: false
-        default: custom
-        type: string
+      toolchain:
+        description: >-
+          Build toolchain(s) to provision — space/comma/newline-separated
+          tokens, or "custom" (none — drive it via setup-command). Built-in
+          presets (each maps to its standard setup action):
+            rust    → dtolnay/rust-toolchain + Swatinem/rust-cache
+            node    → actions/setup-node (npm cache when node_workdir set)
+            go      → actions/setup-go
+            dotnet  → actions/setup-dotnet  (C# / F#)
+            python  → actions/setup-python
+            bun     → oven-sh/setup-bun
+          Multiple: "go node", "rust dotnet". For anything else (C/C++ MSVC,
+          zig, java, flutter, deno…) use `custom` + `setup-command` to run the
+          stack's own installer, OR put a `uses: owner/setup-*` step in your
+          own workflow before this reusable call (cleanest for exotic stacks —
+          the reusable never had to know about them).
       node_version:
         description: "Node version for the frontend/npm step."
         required: false
@@ -105,6 +116,16 @@ on:
         description: "Append `### Contributors` (range authors, first-timers flagged) to the Release body."
         required: false
         default: true
+        type: boolean
+      prerelease:
+        description: "Force-mark the Release as a pre-release. Auto: a tag/version containing '-' (v0.2.0-beta, -rc.1) is always treated as pre-release regardless."
+        required: false
+        default: false
+        type: boolean
+      draft:
+        description: "Create the Release as a draft (manual review before publishing). release-please draft releases are edited in place."
+        required: false
+        default: false
         type: boolean
       post-publish-command:
         description: "pwsh run after attach (publish pointer, notify). $env:VERSION/$env:TAG set; env-JSON loaded."
@@ -164,41 +185,52 @@ jobs:
           "TAG=$tag"     | Out-File $env:GITHUB_ENV -Append
           Write-Output "Releasing v$v (tag $tag)"
 
-      # ── Language presets (pick one via `language:`; `custom` = none) ──────
+      # ── Toolchain — built-in presets + any `owner/action@ref` ──────────────
+      # `toolchain` may hold several tokens: "rust", "go node",
+      # "rust ilammy/msvc-dev-cmd@v1". Built-ins expand to their standard
+      # setup action; anything else is used verbatim as the action ref.
       - name: Setup Rust
-        if: ${{ inputs.language == 'rust' }}
+        if: ${{ contains(inputs.toolchain, 'rust') }}
         uses: dtolnay/rust-toolchain@stable
 
       - name: Rust cache
-        if: ${{ inputs.language == 'rust' }}
+        if: ${{ contains(inputs.toolchain, 'rust') }}
         uses: Swatinem/rust-cache@v2
 
       - name: Setup Go
-        if: ${{ inputs.language == 'go' }}
+        if: ${{ contains(inputs.toolchain, 'go') }}
         uses: actions/setup-go@v6
         with:
           go-version: stable
 
       - name: Setup Python
-        if: ${{ inputs.language == 'python' }}
+        if: ${{ contains(inputs.toolchain, 'python') }}
         uses: actions/setup-python@v6
         with:
           python-version: "3.x"
 
-      - name: Setup .NET
-        if: ${{ inputs.language == 'dotnet' }}
+      - name: Setup .NET (C#/F#)
+        if: ${{ contains(inputs.toolchain, 'dotnet') }}
         uses: actions/setup-dotnet@v5
         with:
           dotnet-version: "8.x"
 
+      - name: Setup Bun
+        if: ${{ contains(inputs.toolchain, 'bun') }}
+        uses: oven-sh/setup-bun@v2
+
       - name: Setup Node
-        if: ${{ inputs.language == 'node' || inputs.node_workdir != '' }}
+        if: ${{ contains(inputs.toolchain, 'node') || inputs.node_workdir != '' }}
         uses: actions/setup-node@v5
         with:
           node-version: ${{ inputs.node_version }}
           # npm cache only makes sense when there's a lockfile dir to point at.
           cache: ${{ inputs.node_workdir != '' && 'npm' || '' }}
           cache-dependency-path: ${{ inputs.node_workdir != '' && format('{0}/package-lock.json', inputs.node_workdir) || '' }}
+
+      # Non-builtin toolchains: the caller handles them — either an earlier
+      # `uses:` step in its own workflow (before this reusable job) or
+      # `setup-command` runs the installer. The reusable never has to know.
 
       - name: Build frontend (npm ci + build)
         if: ${{ inputs.node_workdir != '' }}
@@ -238,13 +270,23 @@ jobs:
             $toUpload += $resolved
           }
           $repo = "${{ github.repository }}"
+          # Pre-release auto-detect: a '-' in the version (v0.2.0-beta, -rc.1)
+          # OR the explicit `prerelease` input → mark the release pre-release.
+          $isPre = "${{ inputs.prerelease }}" -eq "true" -or "${{ steps.ver.outputs.version }}" -match "-"
+          $draftFlag = @(); if ("${{ inputs.draft }}" -eq "true") { $draftFlag += "--draft" }
+          $preFlag   = @(); if ($isPre) { $preFlag += "--prerelease" }
+
           $exists = $false
           try { gh release view $tag --repo $repo | Out-Null; $exists = ($LASTEXITCODE -eq 0) } catch { $exists = $false }
           if (-not $exists) {
             Write-Output "no existing release for $tag — creating one (plain notes)"
-            gh release create $tag --repo $repo --title "v${{ steps.ver.outputs.version }}" --notes "Release ${{ steps.ver.outputs.version }}"
+            gh release create $tag --repo $repo --title "v${{ steps.ver.outputs.version }}" --notes "Release ${{ steps.ver.outputs.version }}" @preFlag @draftFlag
             if ($LASTEXITCODE -ne 0) { Write-Error "gh release create failed"; exit $LASTEXITCODE }
             Start-Sleep -Seconds 3   # let the API settle before upload
+          } elseif ($isPre -or $draftFlag) {
+            # release-please may have created the release already — re-flag it
+            # so a beta tag isn't shipped as a "Latest" stable release.
+            gh release edit $tag --repo $repo @preFlag @draftFlag
           }
           foreach ($f in $toUpload) {
             Push-Location $f.Directory.FullName
