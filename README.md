@@ -1,6 +1,6 @@
-# gh-actions — reusable release & build workflows
+# gh-actions — release & build workflows
 
-Two composable reusable workflows for GitHub Actions. **`release.yml`** wraps
+Two composable workflows for GitHub Actions. **`release.yml`** wraps
 release-please and adds the Release body/metadata it can't produce.
 **`build.yml`** is the optional CI layer for projects that ship binaries.
 Use one, the other, or both.
@@ -187,7 +187,7 @@ create race.
 | Secret | Needed for |
 |---|---|
 | `token` | PAT or `github.token` for `gh release create/upload/edit`. |
-| `env-json` | One JSON object → each value `::add-mask::`ed then injected into `GITHUB_ENV` for every later step. Multiline values supported. **`env` is a reserved secret name — hence `env-json`.** This is how hooks get credentials: `with:` can't carry secrets and a reusable can't iterate unknown secret names. Malformed JSON fails with a clear error. |
+| `env-json` | One JSON object → each value `::add-mask::`ed then injected into `GITHUB_ENV` for every later step. Multiline values supported. **`env` is a reserved secret name — hence `env-json`.** This is how hooks get credentials: `with:` can't carry secrets and a called workflow can't iterate unknown secret names. Malformed JSON fails with a clear error. |
 
 ---
 
@@ -204,7 +204,7 @@ All hook commands (`setup`/`build`/`post-publish`) see, exported to `GITHUB_ENV`
 | `$ASSETS` | Newline list of filenames in `$ASSETS_DIR` |
 | *env-json keys* | Whatever the project's JSON carried |
 
-**Gotcha**: `with:` inputs evaluate **before** the reusable runs —
+**Gotcha**: `with:` inputs evaluate **before** the workflow runs —
 `${{ env.VERSION }}` does NOT exist there. Use the shell variable **inside**
 the hook body: `$VERSION` (bash) / `$env:VERSION` (pwsh). The hook body
 travels as an env var, so `$` reaches the hook's shell unexpanded and is
@@ -310,12 +310,12 @@ jobs:
     with: { version: ${{ inputs.version }}, toolchain: go, ... }
 ```
 
-# Versioning these reusables
+# Versioning
 
 | Ref | Use when |
 |---|---|
 | `@v1` (floating major) | **Production callers** — stable, gets non-breaking fixes |
-| `@main` | Development of the reusables themselves — every push changes behavior for all callers |
+| `@main` | Development of these workflows — every push changes behavior for all callers |
 
 The repo self-versions with its own `release.yml` — merge the Release PR
 and the tag `v1.x.y` is created, then `v1` is moved to it.

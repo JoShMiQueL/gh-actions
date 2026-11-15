@@ -1,7 +1,7 @@
 name: Build
 
 # ============================================================================
-#  Reusable build-and-attach layer — the OPTIONAL companion of release.yml.
+#  Build-and-attach layer — the OPTIONAL companion of release.yml.
 #
 #  release.yml augments release-please (Release body, title, Contributors).
 #  THIS workflow is the CI half for projects that compile: toolchain →
@@ -38,14 +38,14 @@ name: Build
 #    env-json One JSON object = the project's env, injected into every step
 #             with each value `::add-mask::`ed first. Named env-json because
 #             bare `env` is a reserved secret name in workflow_call. Lets a
-#             project pass ANY secret set to its hooks without this reusable
+#             project pass ANY secret set to its hooks without this workflow
 #             knowing the names — `with:` inputs can't carry secrets.
 #
 #  ── Hooks — all optional, run in `shell` (bash default), see ────────────────
 #     $VERSION $TAG $TARGET exported to GITHUB_ENV, plus every env-json var.
 #     $ASSETS_DIR + $ASSETS (newline list) are exported after packaging, so
 #     post-publish sees the final filenames actually uploaded.
-#     IMPORTANT: `with:` inputs evaluate BEFORE the reusable runs — GitHub's
+#     IMPORTANT: `with:` inputs evaluate BEFORE the workflow runs — GitHub's
 #     `${{ env.VERSION }}` does NOT exist there. Use the SHELL variable inside
 #     the hook body: `$VERSION` (bash) / `$env:VERSION` (pwsh).
 #    setup-command        after version-stamp, before build — codegen, deps.
@@ -106,8 +106,8 @@ on:
           Versions are inline: "rust@1.75.0 python@3.12 go@1.22". Omit @ to
           take the default shown. Multiple toolchains: "rust node@24".
           Anything else (C++ MSVC, zig, java, flutter, deno…) = `custom` +
-          setup-command runs the installer, OR a `uses:` step before this
-          reusable call — the reusable never has to know about them.
+          setup-command runs the installer, OR a `uses:` step of your own
+          before this job — the workflow never has to know about them.
         required: false
         default: custom
         type: string

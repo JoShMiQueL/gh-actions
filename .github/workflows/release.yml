@@ -1,7 +1,7 @@
 name: Release
 
 # ============================================================================
-#  release-please, augmented. This reusable wraps googleapis/release-please
+#  release-please, augmented. Wraps googleapis/release-please
 #  and adds what it can't do: a rich Release body and metadata.
 #
 #    push to main ──────────────► release-please job (opens/updates the
@@ -71,7 +71,7 @@ on:
         default: ""
         type: string
       release-notes:
-        description: "Extra markdown appended to the Release body — after the changelog, before Contributors. For a fully custom body, edit it yourself after this reusable (`gh release edit`)."
+        description: "Extra markdown appended to the Release body — after the changelog, before Contributors. For a fully custom body, edit it yourself afterwards (`gh release edit`)."
         required: false
         default: ""
         type: string
