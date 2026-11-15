@@ -1,0 +1,33 @@
+name: Version
+
+# This repo versions itself — same machinery it ships to callers.
+#   push to main → release-please maintains the Release PR
+#   merge it     → tag v1.x.y created → post-publish moves the floating
+#                  `v1` major tag so callers pin @v1
+#
+# `contributors: false` — a tooling repo doesn't need a Contributors
+# section in its own releases; the reusable still proves itself via the
+# release-please job that runs on every main push.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "release this version directly (skips release-please)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release:
+    uses: ./.github/workflows/release.yml
+    secrets:
+      token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+    with:
+      version: ${{ inputs.version }}
+      contributors: false
+      release-please: true

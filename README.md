@@ -1,29 +1,53 @@
-# release — release-please, augmented + an optional build layer
+# gh-actions — reusable release & build workflows
 
-Two reusable workflows that compose. **`release.yml`** augments release-please
-with the Release body/metadata it can't produce. **`build.yml`** is the
-opt-in CI half for projects that compile binaries. Use one or both.
+Two composable reusable workflows for GitHub Actions. **`release.yml`** wraps
+release-please and adds the Release body/metadata it can't produce.
+**`build.yml`** is the optional CI layer for projects that ship binaries.
+Use one, the other, or both.
 
-| Reusable | What it adds on top of release-please | When you call it |
+```
+            ┌────────────────────────────────────────────────┐
+            │  JoShMiQueL/gh-actions                         │
+            │                                                │
+            │  release.yml ──► release-please + Release body │
+            │                  (title, notes, Contributors)  │
+            │                                                │
+            │  build.yml   ──► toolchain → build → package   │
+            │                  → attach → post-publish       │
+            └────────────────────────────────────────────────┘
+```
+
+## The model
+
+| Artifact | Content | Owner |
 |---|---|---|
-| **`release.yml`** | Release title template, extra `release-notes`, **`### Contributors`** (authors of the range, `*(new contributor)*` badges), prerelease/draft flags | **Always** — it's the augmentation |
-| **`build.yml`** | toolchain setup → version-stamp → build → attach artifacts → post-publish hook | Only when the project ships binaries |
+| `CHANGELOG.md` | **Changes only** — `### Features` / `### Bug Fixes` | release-please |
+| Release body (GitHub page) | **Everything** — changelog + `release-notes` + `### Contributors` | release-please + `release.yml` |
+| Release assets | Binaries, archives, checksums | `build.yml` |
 
-## The model (clap / industry standard)
+## How a release flows
 
-| Artifact | Content |
-|---|---|
-| **`CHANGELOG.md`** (repo file) | **Changes only** — `### Features`/`### Bug Fixes`. Owned by release-please. |
-| **Release body** (the GitHub page) | **Everything** — the changelog + `release-notes` + `### Contributors`. |
+```
+push to main (conventional commits) ──► release-please opens/updates
+                                        the Release PR
+merge the PR when ready ──────────────► rp creates tag + Release
+tag push fires both jobs in parallel ─► release job: body (notes + Contributors)
+                                        build job(s): compile → attach assets
+```
 
-## Minimal caller — a lib / docs / config repo (no binaries)
+One caller file per project. The dev only chooses **how many jobs** and
+**which inputs**.
+
+## Quick start — minimal (library, docs, config repo)
+
+`.github/workflows/release.yml` in your project:
 
 ```yaml
 name: Release
 on:
   push:
-    branches: [main]      # release-please accumulates conventional commits
-    tags: ["v*.*.*"]      # augment the Release on tag
+    branches: [main]
+    tags: ["v*.*.*"]
   workflow_dispatch:
     inputs: { version: { required: false, type: string } }
 permissions:
@@ -36,12 +60,11 @@ jobs:
       token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
     with:
       version: ${{ inputs.version }}
-      release-title: "MyLib {version}"
 ```
 
-That's it — Release PR maintenance, title, notes, Contributors. Zero build.
+That's it — Release PR maintenance, `### Contributors`, done.
 
-## App with binaries — add a `build` job in the same file
+## Quick start — app with binaries
 
 ```yaml
 jobs:
@@ -57,73 +80,251 @@ jobs:
     if: ${{ github.ref_type == 'tag' || inputs.version != '' }}
     uses: JoShMiQueL/gh-actions/.github/workflows/build.yml@main
     secrets:
-      token:    ${{ secrets.RELEASE_PLEASE_TOKEN }}
-      env-json: ${{ secrets.PROJECT_RELEASE_ENV }}   # optional JSON {"KEY":"val"}
+      token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
     with:
       version: ${{ inputs.version }}
-      toolchain: "rust node@24"
-      shell: pwsh
-      node_workdir: launcher/ui
-      version-files: launcher/src-tauri/tauri.conf.json
-      build-command: cargo build --release -p myapp
-      artifacts: target/release/myapp.exe
-      post-publish-command: ./target/release/cli.exe publish ... --version $env:VERSION
+      toolchain: go
+      build-command: go build -o myapp .
+      artifacts: myapp
+      checksums: sha256
 ```
 
-Both jobs fire on the same tag push and run **in parallel** — `release` edits
-the Release *body* (notes/Contributors), `build` uploads *assets*. They don't
-conflict; whichever lands first creates the Release if missing. **Keep
-`release-title` identical in both** in case `build` wins the create race.
+Both jobs fire on the same tag push **in parallel** — `release` edits the
+body, `build` uploads assets. Whichever lands first creates the Release if
+missing. Keep `release-title` identical in both in case `build` wins the
+create race.
 
-## `release.yml` inputs (rp augmentation)
+---
 
-| Input | Default | What it controls |
+# `release.yml` — inputs
+
+| Input | Default | What it does |
 |---|---|---|
-| `version` | `""` | manual-dispatch version — skips release-please, releases this directly |
-| `tag-prefix` | `"v"` | strip this from the tag → version (`""`, `"pkg-v"`, …) |
-| `runner` | `ubuntu-latest` | OS for the metadata job — no compilation happens here |
-| `release-title` | `""` | title template — `{version}`/`{tag}` expand |
-| `release-notes` | `""` | extra markdown appended to the body — after changelog, before Contributors |
-| `contributors` | `true` | append the `### Contributors` section |
-| `prerelease` | `false` | mark pre-release — **auto** on `-` in the version (`v0.2.0-beta`) |
-| `draft` | `false` | create/update the Release as a draft |
-| `release-please` | `true` | run the embedded release-please job on branch pushes |
-| `rp-config-file` | `release-please-config.json` | release-please config path |
-| `rp-manifest-file` | `.release-please-manifest.json` | release-please manifest path |
+| `version` | `""` | Manual-dispatch version → releases it directly, skips release-please entirely. Ignored on tag/branch push. |
+| `tag-prefix` | `"v"` | Prefix stripped from the tag to get the version: `v0.1.4`→`0.1.4`, `pkg-v0.1.4`→`0.1.4` (`tag-prefix: "pkg-v"`), `0.1.4`→`0.1.4` (`""`). |
+| `runner` | `ubuntu-latest` | OS for the metadata job — nothing compiles here. |
+| `release-title` | `""` | Title template — `{version}` and `{tag}` expand. Empty keeps rp's title (or `v{version}` on manual creates). |
+| `release-notes` | `""` | Markdown appended to the body — after the changelog, before Contributors. |
+| `contributors` | `true` | Append `### Contributors` — authors of `prev_tag..tag`, first-timers flagged `*(new contributor)*`. |
+| `prerelease` | `false` | Mark pre-release. **Auto**: any `-` in the version (`v0.2.0-beta`, `-rc.1`) is always pre-release. |
+| `draft` | `false` | Create/update the Release as a draft. |
+| `release-please` | `true` | Run the embedded release-please job on branch pushes. `false` if you drive rp from your own workflow. |
+| `rp-config-file` | `release-please-config.json` | release-please config path. |
+| `rp-manifest-file` | `.release-please-manifest.json` | release-please manifest path. |
 
-## `build.yml` inputs (CI layer)
+## `release.yml` — secrets
 
-| Input | Default | What it controls |
+| Secret | Needed for |
+|---|---|
+| `token` | PAT — release-please pushes tags + `gh release edit`. **A bot-pushed tag only re-triggers workflows if a PAT pushed it** (`GITHUB_TOKEN` doesn't cascade). Falls back to `github.token` — enough when tags come from manual `git tag`. |
+
+---
+
+# `build.yml` — inputs
+
+## trigger / resolve
+
+| Input | Default | What it does |
 |---|---|---|
-| `version`, `tag-prefix` | `""`, `"v"` | same resolution as release.yml |
-| `runner` | `windows-latest` | OS for the build |
-| `shell` | `bash` | shell for **hook** commands (`setup`/`build`/`post-publish`) — `bash`/`pwsh`/`sh`/`cmd`. Internals always use bash |
-| `toolchain` | `custom` | `name[@version]` tokens → their setup action: `rust`(@stable) `node`(@lts/\*) `go`(@stable) `dotnet`(@8.x) `python`(@3.x) `bun`(@latest). `custom` = none — exotic stacks via `setup-command` or an earlier `uses:` |
-| `node_workdir` | `""` | dir with `package.json` → `npm ci\|install`+`npm run build` + version-stamp; implies node toolchain |
-| `version-bump` | `auto` | `auto`: stamp `$VERSION` into the toolchain's canonical manifest (root `Cargo.toml` skipped when `[workspace]`, `package.json`, `pyproject.toml`). `none`: stamp it yourself |
-| `version-files` | `""` | extra files to stamp `$VERSION` into, one per line — first semver in each file is replaced |
-| `setup-command` | `""` | after version-stamp, before build — codegen, deps, patches |
-| `build-command` | `""` | the release build (omit for frontend-only via `node_workdir`) |
-| `artifacts` | `""` | files/globs attached to the Release, one per line; missing fails loudly; empty = attach nothing |
-| `release-title`, `prerelease`, `draft` | — | only used if *this* job creates the Release (lost the race to release.yml) |
-| `post-publish-command` | `""` | after attach — self-update pointer, notify, publish to a store |
+| `version` | `""` | Manual-dispatch version → tag = `tag-prefix`+version. Ignored on tag push. |
+| `tag-prefix` | `"v"` | Same resolution as release.yml. |
+| `runner` | `windows-latest` | Runner OS label — any GitHub or self-hosted label. Set per-leg when matrixing. |
+| `shell` | `bash` | Shell for **hook** commands only (`setup`/`build`/`post-publish`) — `bash`/`pwsh`/`sh`/`cmd`. Internal steps always use bash (Git Bash on Windows). Use `pwsh` when hooks need PowerShell (`$env:VERSION`). |
+| `working-directory` | `""` | `cd` here after checkout — monorepo support. Stamp, hooks, build and artifact patterns all resolve relative to it. |
 
-## Secrets
+## toolchain
 
-| Secret | `release.yml` | `build.yml` | Needed for |
-|---|---|---|---|
-| `token` | ✓ | ✓ | release-please pushes tags + `gh release` calls. A PAT — bot-pushed tags only re-trigger workflows when a PAT pushed them (GITHUB_TOKEN doesn't cascade). |
-| `env-json` | — | ✓ | One JSON object = the project's env, injected into every step with each value `::add-mask::`ed first. `with:` inputs can't carry secrets — this is how hooks get credentials. **`env` is a reserved secret name — use `env-json`.** |
+| Input | Default | What it does |
+|---|---|---|
+| `toolchain` | `custom` | Space-separated `name[@version]` tokens → their setup action: `rust`(@stable + cargo cache) `node`(@lts/\*) `go`(@stable) `dotnet`(@8.x) `python`(@3.x) `bun`(@latest). E.g. `"rust@1.75 node@24"`. `custom` = provision nothing — exotic stacks (MSVC, zig, java…) via `setup-command` or a `uses:` step of your own before this job. |
+| `node_workdir` | `""` | Dir with `package.json` → `npm ci` (or `npm install` w/o lockfile) + `npm run build` run here, and its package.json gets version-stamped. Implies the node toolchain. Empty = no frontend step. |
 
-## Hooks (`setup-command` / `build-command` / `post-publish-command`)
+## version stamp
 
-- Run in `shell` (default `bash`); see `$VERSION`/`$TAG` (bash) or
-  `$env:VERSION` (pwsh) plus every `env-json` var.
-- **`with:` inputs evaluate BEFORE the reusable runs** — `${{ env.VERSION }}`
-  does NOT exist there. Use the shell variable inside the hook body.
+| Input | Default | What it does |
+|---|---|---|
+| `version-bump` | `auto` | `auto`: stamp `$VERSION` into the toolchain's canonical manifest — root `Cargo.toml` (skipped when `[workspace]` root), `package.json` (root + node_workdir), `pyproject.toml`. First semver found is replaced. `none`: stamp it yourself in `setup-command`. |
+| `version-files` | `""` | Extra files to stamp, one path per line — nested `Cargo.toml`, `tauri.conf.json`, `*.csproj`… Same first-semver rule. |
 
-## Cross-OS
+## build
 
-Internal steps are `shell: bash` — Git Bash ships on Windows runners, so the
-same bash runs everywhere. `release.yml` defaults to `ubuntu-latest` (it only
-edits Release metadata); `build.yml` defaults to `windows-latest`.
+| Input | Default | What it does |
+|---|---|---|
+| `target` | `""` | Build target name/triple (`x86_64-pc-windows-msvc`, `linux/arm64`…) — exported as `$TARGET` to hooks and usable as `{target}` in name templates. Doesn't cross-compile by itself; your `build-command` uses it (`cargo build --target $TARGET`). |
+| `setup-command` | `""` | Runs after stamp, before build — codegen, deps, patches. Sees `$VERSION`/`$TAG`/`$TARGET`. |
+| `build-command` | `""` | The release build. Omit for frontend-only (node_workdir does the work). |
+
+## package
+
+| Input | Default | What it does |
+|---|---|---|
+| `artifacts` | `""` | Files/globs to attach, one per line. Resolved inside the workspace — `../` or absolute paths are refused (security). Empty = attach nothing. |
+| `artifact-name` | `""` | Rename template per artifact — `{name}`(repo) `{version}` `{tag}` `{target}` `{basename}` `{stem}` `{ext}` expand. Use `{target}`/`{stem}` so matrix legs or multiple files don't collide — collisions fail loudly. |
+| `archive` | `none` | Pack all artifacts (+`include` files) into ONE archive: `none`/`zip`/`tar.gz`/`auto` (auto = zip on Windows, tar.gz elsewhere). |
+| `archive-name` | `{name}-{version}-{target}` | Archive name template — `{name}` `{version}` `{tag}` `{target}` expand; extension appended by `archive`. → `myapp-1.2.0-x86_64-pc-windows-msvc.zip` |
+| `include` | `""` | Extra files packed into the archive, one per line — `LICENSE`, `README.md`. Missing files warn, don't fail. |
+| `checksums` | `none` | Per-asset checksum file — `sha256`/`sha512`/`"sha256 sha512"`. Produces `<asset>.sha256` next to each upload. |
+| `fail-on-unmatched-artifacts` | `true` | `true`: a pattern matching nothing fails the run (silence = broken build). `false`: warn and continue (optional outputs). |
+
+## release metadata (used if *this* job creates the Release)
+
+| Input | Default | What it does |
+|---|---|---|
+| `release-title` | `""` | Same template rules — keep consistent with the release.yml job. |
+| `prerelease` | `false` | Auto on `-` in version. |
+| `draft` | `false` | Create as draft. |
+| `make-latest` | `auto` | `auto` = GitHub decides · `true` = force latest (skipped on pre/draft) · `false` = explicitly un-latest (maintenance releases on old branches). |
+| `discussion-category` | `""` | Existing Discussions category — GitHub opens a linked Discussion on create. |
+
+## hooks
+
+| Input | Default | What it does |
+|---|---|---|
+| `post-publish-command` | `""` | Runs after attach — self-update pointers, store publishes, notifications. Sees `$VERSION`/`$TAG`/`$TARGET`/`$ASSETS_DIR`/`$ASSETS` + env-json vars. |
+
+## `build.yml` — secrets
+
+| Secret | Needed for |
+|---|---|
+| `token` | PAT or `github.token` for `gh release create/upload/edit`. |
+| `env-json` | One JSON object → each value `::add-mask::`ed then injected into `GITHUB_ENV` for every later step. Multiline values supported. **`env` is a reserved secret name — hence `env-json`.** This is how hooks get credentials: `with:` can't carry secrets and a reusable can't iterate unknown secret names. Malformed JSON fails with a clear error. |
+
+---
+
+# Hooks — environment contract
+
+All hook commands (`setup`/`build`/`post-publish`) see, exported to `GITHUB_ENV`:
+
+| Var | Value |
+|---|---|
+| `$VERSION` | Resolved version (`0.1.4`) — `$env:VERSION` in pwsh |
+| `$TAG` | Resolved tag (`v0.1.4`) |
+| `$TARGET` | The `target` input (`""` if unset) |
+| `$ASSETS_DIR` | Staging dir with final packaged files (post-publish) |
+| `$ASSETS` | Newline list of filenames in `$ASSETS_DIR` |
+| *env-json keys* | Whatever the project's JSON carried |
+
+**Gotcha**: `with:` inputs evaluate **before** the reusable runs —
+`${{ env.VERSION }}` does NOT exist there. Use the shell variable **inside**
+the hook body: `$VERSION` (bash) / `$env:VERSION` (pwsh). The hook body
+travels as an env var, so `$` reaches the hook's shell unexpanded and is
+evaluated there — correct by design.
+
+# Name templates
+
+Used by `release-title`, `artifact-name`, `archive-name`:
+
+| Placeholder | Expands to | Example |
+|---|---|---|
+| `{name}` | repo name | `myapp` |
+| `{version}` | resolved version | `1.2.0` |
+| `{tag}` | resolved tag | `v1.2.0` |
+| `{target}` | `target` input | `x86_64-pc-windows-msvc` |
+| `{basename}` | artifact filename (artifact-name only) | `app.exe` |
+| `{stem}` | filename without extension (artifact-name only) | `app` |
+| `{ext}` | extension (artifact-name only) | `exe` |
+
+---
+
+# Patterns — pick your path
+
+## 1 · Library / docs / config — no binaries
+
+```
+caller: 1 job → release.yml
+push main → Release PR → merge → tag → Release(changelog + Contributors)
+```
+
+## 2 · Single-platform app
+
+```
+caller: release job + build job
+merge → tag → ∥ release edits body
+              build compiles → myapp + myapp.sha256 attached
+```
+
+## 3 · Multi-platform (the full one)
+
+```yaml
+build:
+  strategy:
+    fail-fast: false
+    matrix:
+      include:
+        - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu }
+        - { os: windows-latest, target: x86_64-pc-windows-msvc   }
+        - { os: macos-latest,   target: x86_64-apple-darwin      }
+  uses: JoShMiQueL/gh-actions/.github/workflows/build.yml@main
+  with:
+    runner: ${{ matrix.os }}
+    target: ${{ matrix.target }}
+    toolchain: rust
+    build-command: cargo build --release --target $TARGET
+    artifacts: target/$TARGET/release/myapp*
+    archive: auto
+    archive-name: "myapp-{version}-{target}"
+    include: |
+      LICENSE
+      README.md
+    checksums: sha256
+```
+
+→ `myapp-1.2.0-x86_64-pc-windows-msvc.zip`(+sha256), `…-linux-gnu.tar.gz`(+sha256), `…-apple-darwin.tar.gz`(+sha256) — taiki-e/goreleaser style.
+
+## 4 · Frontend-only
+
+```yaml
+with:
+  node_workdir: web        # npm ci + build + package.json stamp
+  artifacts: web/dist/*
+```
+
+## 5 · Monorepo
+
+```yaml
+with:
+  working-directory: crates/my-cli
+  toolchain: rust
+  build-command: cargo build --release
+  artifacts: ../../target/release/my-cli
+```
+
+## 6 · Publish outside GitHub (stores, pointers, signing)
+
+```yaml
+secrets:
+  env-json: ${{ secrets.MY_RELEASE_ENV }}   # {"KEY":"val",...}
+with:
+  post-publish-command: ./cli publish --version $VERSION
+```
+
+## 7 · No release-please — manual releases only
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs: { version: { required: true, type: string } }
+jobs:
+  build:
+    uses: JoShMiQueL/gh-actions/.github/workflows/build.yml@main
+    with: { version: ${{ inputs.version }}, toolchain: go, ... }
+```
+
+# Versioning these reusables
+
+| Ref | Use when |
+|---|---|
+| `@v1` (floating major) | **Production callers** — stable, gets non-breaking fixes |
+| `@main` | Development of the reusables themselves — every push changes behavior for all callers |
+
+The repo self-versions with its own `release.yml` — merge the Release PR
+and the tag `v1.x.y` is created, then `v1` is moved to it.
+
+# Gotchas learned the hard way
+
+- **`secrets:` must use block style** — flow `{ }` can't contain `${{ }}`.
+- **Caller needs `pull-requests: write`** or rp dies with cryptic `startup_failure`.
+- **`${{ env.* }}` doesn't exist inside `with:` inputs** — hooks use `$VAR`.
+- **`gh release upload` mangles paths on Windows** — we always upload basenames from inside the file's dir.
+- **Artifacts must resolve inside the workspace** — `../x` and absolute paths are refused.
+- **Tag re-trigger needs a PAT** — `GITHUB_TOKEN`-pushed tags don't fire workflows.
