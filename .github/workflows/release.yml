@@ -239,8 +239,11 @@ jobs:
           $exists = $false
           try { gh release view $tag | Out-Null; $exists = $true } catch { $exists = $false }
           if (-not $exists) {
-            Write-Output "no existing release for $tag — creating empty (notes auto)"
-            gh release create $tag --title "v${{ steps.ver.outputs.version }}" --generate-notes
+            Write-Output "no existing release for $tag — creating one (plain notes)"
+            # --generate-notes needs the previous tag resolvable; on a tag
+            # checkout it isn't. Use a plain body — the real changelog lives
+            # in release-please's Release when it made one.
+            gh release create $tag --title "v${{ steps.ver.outputs.version }}" --notes "Release ${{ steps.ver.outputs.version }}"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           foreach ($f in $toUpload) {
