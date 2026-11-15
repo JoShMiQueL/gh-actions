@@ -225,13 +225,17 @@ jobs:
         shell: pwsh
         run: |
           $tag = "${{ steps.ver.outputs.tag }}"
-          # Normalize to OS-native absolute paths — `gh` on Windows chokes on
-          # `dir/file` glob syntax ("no matches found for 'd'").
-          $files = "${{ inputs.artifacts }}" -split "[`n ]" | ForEach-Object { $_.Trim() } | Where-Object { $_ } | ForEach-Object {
-            (Resolve-Path $_ -ErrorAction SilentlyContinue).Path ?? $_
+          $patterns = "${{ inputs.artifacts }}" -split "[`n ]" | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+          # `gh release upload` on Windows glob-expands the arg itself, so
+          # `dir/file` or an absolute `D:\...` dies with "no matches found".
+          # Resolve each pattern to files and pass just the BASENAME while
+          # sitting in the file's directory — the only form gh can't glob-mangle.
+          $toUpload = @()
+          foreach ($p in $patterns) {
+            $resolved = Get-Item $p -ErrorAction SilentlyContinue
+            if (-not $resolved) { Write-Error "artifact not found: $p"; exit 1 }
+            $toUpload += $resolved
           }
-          $missing = $files | Where-Object { -not (Test-Path $_) }
-          if ($missing) { Write-Error "artifact(s) not found: $($missing -join ', ')"; exit 1 }
           $exists = $false
           try { gh release view $tag | Out-Null; $exists = $true } catch { $exists = $false }
           if (-not $exists) {
@@ -239,8 +243,13 @@ jobs:
             gh release create $tag --title "v${{ steps.ver.outputs.version }}" --generate-notes
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
-          gh release upload $tag @files --clobber
-          exit $LASTEXITCODE
+          foreach ($f in $toUpload) {
+            Push-Location $f.Directory.FullName
+            gh release upload $tag $f.Name --clobber
+            $code = $LASTEXITCODE
+            Pop-Location
+            if ($code -ne 0) { exit $code }
+          }
 
       # Contributors live in the Release body (the page), never in CHANGELOG.md.
       # Range = prev_tag..this_tag; an author is "(new contributor)" if they
