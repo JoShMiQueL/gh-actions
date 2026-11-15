@@ -4,7 +4,7 @@ name: Release
 #  One reusable "tag → release" pipeline for every project. A tag (from
 #  release-please merging its Release PR, or a manual `git tag vX.Y.Z`) runs:
 #
-#      checkout → load env-JSON → resolve version → language preset →
+#      checkout → load env-JSON → resolve version → toolchain presets →
 #      [frontend build] → [version stamp] → build → attach binaries →
 #      append "### Contributors" to the Release body → [post-publish hook]
 #
@@ -25,7 +25,7 @@ name: Release
 #          env-json:   ${{ secrets.PROJECT_RELEASE_ENV }}    # JSON {"KEY":"val",...}
 #                                                         # (renamed — bare 'env' is a reserved name)
 #        with:
-#          language: go
+#          toolchain: go
 #          build-command: go build -o dist/app.exe ./cmd/app
 #          artifacts: dist/app.exe
 #
@@ -36,25 +36,31 @@ name: Release
 #                         pointer to R2/S3, bump a "latest" file, notify.
 #
 #  ── Secrets ───────────────────────────────────────────────────────────────
-#    token   PAT used for `gh release edit` (contributors body). Falls back to
-#            github.token when unset — enough for same-repo edits.
-#    env     One JSON object carrying the project's whole env — keeps secrets
-#            out of the caller YAML. `{"API_KEY":"y","BUCKET":"x"}` is injected
-#            into every step via `Load project env`.
+#    token    PAT used for `gh release edit` (contributors body). Falls back to
+#             github.token when unset — enough for same-repo edits.
+#    env-json One JSON object carrying the project's whole env — keeps secrets
+#             out of the caller YAML. `{"API_KEY":"y","BUCKET":"x"}` is injected
+#             into every step via `Load project env`. Named `env-json` because
+#             bare `env` is a reserved secret name in workflow_call.
 #
 #  ── Per-input reference ───────────────────────────────────────────────────
 #    version           manual-dispatch version (ignored on tag push)
 #    tag-prefix        strip this from the tag → version ("v" default; "" for
 #                      bare `0.1.4`; "pkg-v" for monorepo `pkg-v0.1.4`)
 #    runner            windows-latest | ubuntu-latest | macos-latest
-#    language          rust (toolchain+cache) | node | go | dotnet | python |
-#                      custom (no preset — drive it via setup/build-command)
+#    toolchain         space-separated builtins → their setup action: rust
+#                      (toolchain+cache) | node | go | dotnet (C#/F#) | python |
+#                      bun — or `custom` (none; drive it via setup-command or an
+#                      earlier `uses:` in your workflow — C++ MSVC, zig, java…)
 #    node_version      node for the frontend step (default 24)
-#    node_workdir      dir with package-lock.json → `npm ci` + `npm run build`;
-#                      empty skips the frontend build
+#    node_workdir      dir with package.json → `npm ci|install` + `npm run build`
+#                      (npm install when no lockfile); empty skips the frontend
 #    artifacts         newline/space-separated paths or globs attached to the
-#                      Release — shippable binaries only
+#                      Release — shippable binaries only; fails if any missing
 #    contributors      bool — append the Contributors section (default true)
+#    prerelease        bool — mark the Release pre-release; AUTO on `-` in the
+#                      version (v0.2.0-beta, -rc.1) regardless of this input
+#    draft             bool — create the Release as a draft
 # ============================================================================
 
 on:
@@ -80,7 +86,7 @@ on:
           tokens, or "custom" (none — drive it via setup-command). Built-in
           presets (each maps to its standard setup action):
             rust    → dtolnay/rust-toolchain + Swatinem/rust-cache
-            node    → actions/setup-node (npm cache when node_workdir set)
+            node    → actions/setup-node
             go      → actions/setup-go
             dotnet  → actions/setup-dotnet  (C# / F#)
             python  → actions/setup-python
@@ -99,7 +105,7 @@ on:
         default: "24"
         type: string
       node_workdir:
-        description: "Dir with package-lock.json — `npm ci` + `npm run build` run here; empty skips the frontend."
+        description: "Dir with package.json — `npm ci` (or `npm install` when no lockfile) + `npm run build` run here; empty skips the frontend."
         required: false
         default: ""
         type: string
@@ -189,10 +195,11 @@ jobs:
           "TAG=$tag"     | Out-File $env:GITHUB_ENV -Append
           Write-Output "Releasing v$v (tag $tag)"
 
-      # ── Toolchain — built-in presets + any `owner/action@ref` ──────────────
-      # `toolchain` may hold several tokens: "rust", "go node",
-      # "rust ilammy/msvc-dev-cmd@v1". Built-ins expand to their standard
-      # setup action; anything else is used verbatim as the action ref.
+      # ── Toolchain — built-in presets only ─────────────────────────────────
+      # `toolchain` may hold several tokens: "rust", "go node", "rust dotnet".
+      # Built-ins expand to their standard setup action. Anything else (C++
+      # MSVC, zig, java, flutter…) = `custom` + the caller provisions it via
+      # setup-command or an earlier `uses:` in its own workflow.
       - name: Setup Rust
         if: ${{ contains(inputs.toolchain, 'rust') }}
         uses: dtolnay/rust-toolchain@stable
