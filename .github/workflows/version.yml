@@ -55,9 +55,11 @@ jobs:
           # Needs a fine-grained PAT with `workflows` permission in
           # RELEASE_PLEASE_TOKEN — GITHUB_TOKEN and OAuth gho_ tokens get
           # rejected whenever the target commit touches .github/workflows/*.
-          # Falls back to a warning (not a failure) so a missing/mis-scoped
-          # PAT doesn't turn the release run red.
-          GH_TOKEN: ${{ secrets.token }}
+          # Falls back to a summary note (not a failure) if the secret is
+          # missing or mis-scoped. (This file is the CALLER — the secret here
+          # is RELEASE_PLEASE_TOKEN; `secrets.token` only exists inside the
+          # reusable's own secret namespace.)
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           REPO: ${{ github.repository }}
         shell: bash
         run: |
