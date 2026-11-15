@@ -217,6 +217,16 @@ jobs:
         run: |
           ${{ inputs.build-command }}
 
+      # Debug auth once — remove when stable. gh needs GH_TOKEN + a repo it can
+      # resolve; on a tag checkout the remote context is thin.
+      - name: Debug gh auth
+        env:
+          GH_TOKEN: ${{ secrets.token || github.token }}
+        shell: pwsh
+        run: |
+          gh auth status 2>&1 | Select-String -NotMatch "token"
+          gh release list --repo ${{ github.repository }} 2>&1 | Select-Object -First 5
+
       # release-please already created the Release with the changelog body —
       # attach binaries to it. Manual runs: create it if missing.
       - name: Attach artifacts to GitHub Release
@@ -238,21 +248,19 @@ jobs:
           }
           $repo = "${{ github.repository }}"
           $exists = $false
-          try { gh release view $tag --repo $repo | Out-Null; $exists = $true } catch { $exists = $false }
+          try { gh release view $tag --repo $repo | Out-Null; $exists = ($LASTEXITCODE -eq 0) } catch { $exists = $false }
           if (-not $exists) {
             Write-Output "no existing release for $tag — creating one (plain notes)"
-            # --generate-notes needs the previous tag resolvable; on a tag
-            # checkout it isn't. Use a plain body — the real changelog lives
-            # in release-please's Release when it made one.
             gh release create $tag --repo $repo --title "v${{ steps.ver.outputs.version }}" --notes "Release ${{ steps.ver.outputs.version }}"
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            if ($LASTEXITCODE -ne 0) { Write-Error "gh release create failed"; exit $LASTEXITCODE }
+            Start-Sleep -Seconds 3   # let the API settle before upload
           }
           foreach ($f in $toUpload) {
             Push-Location $f.Directory.FullName
             gh release upload $tag $f.Name --clobber --repo $repo
             $code = $LASTEXITCODE
             Pop-Location
-            if ($code -ne 0) { exit $code }
+            if ($code -ne 0) { Write-Error "gh release upload failed for $($f.Name)"; exit $code }
           }
 
       # Contributors live in the Release body (the page), never in CHANGELOG.md.
