@@ -374,16 +374,33 @@ jobs:
             [ -n "$f" ] && stamp "$f"
           done <<< "$VERSION_FILES"
 
+      # `shell:` on a step can't take an expression — the input is resolved by
+      # routing: bash runs the hook inline; any other shell wraps it as
+      # `<shell> -Command '<body>'`. pwsh/powershell get -NoProfile.
       - name: Setup (pre-build hook)
         if: ${{ inputs.setup-command != '' }}
-        shell: ${{ inputs.shell }}
+        shell: bash
+        env:
+          HOOK: ${{ inputs.setup-command }}
+          HOOK_SHELL: ${{ inputs.shell }}
         run: |
-          ${{ inputs.setup-command }}
+          if [ "$HOOK_SHELL" = "bash" ] || [ "$HOOK_SHELL" = "sh" ]; then
+            eval "$HOOK"
+          else
+            "$HOOK_SHELL" -NoProfile -Command "$HOOK"
+          fi
 
       - name: Build
-        shell: ${{ inputs.shell }}
+        shell: bash
+        env:
+          HOOK: ${{ inputs.build-command }}
+          HOOK_SHELL: ${{ inputs.shell }}
         run: |
-          ${{ inputs.build-command }}
+          if [ "$HOOK_SHELL" = "bash" ] || [ "$HOOK_SHELL" = "sh" ]; then
+            eval "$HOOK"
+          else
+            "$HOOK_SHELL" -NoProfile -Command "$HOOK"
+          fi
 
       # release-please already created the Release with the changelog body —
       # attach binaries to it. Manual runs: create it if missing.
@@ -485,8 +502,14 @@ jobs:
 
       - name: Post-publish
         if: ${{ inputs.post-publish-command != '' }}
-        shell: ${{ inputs.shell }}
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.token || github.token }}
+          HOOK: ${{ inputs.post-publish-command }}
+          HOOK_SHELL: ${{ inputs.shell }}
         run: |
-          ${{ inputs.post-publish-command }}
+          if [ "$HOOK_SHELL" = "bash" ] || [ "$HOOK_SHELL" = "sh" ]; then
+            eval "$HOOK"
+          else
+            "$HOOK_SHELL" -NoProfile -Command "$HOOK"
+          fi
