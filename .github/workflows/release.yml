@@ -236,19 +236,20 @@ jobs:
             if (-not $resolved) { Write-Error "artifact not found: $p"; exit 1 }
             $toUpload += $resolved
           }
+          $repo = "${{ github.repository }}"
           $exists = $false
-          try { gh release view $tag | Out-Null; $exists = $true } catch { $exists = $false }
+          try { gh release view $tag --repo $repo | Out-Null; $exists = $true } catch { $exists = $false }
           if (-not $exists) {
             Write-Output "no existing release for $tag — creating one (plain notes)"
             # --generate-notes needs the previous tag resolvable; on a tag
             # checkout it isn't. Use a plain body — the real changelog lives
             # in release-please's Release when it made one.
-            gh release create $tag --title "v${{ steps.ver.outputs.version }}" --notes "Release ${{ steps.ver.outputs.version }}"
+            gh release create $tag --repo $repo --title "v${{ steps.ver.outputs.version }}" --notes "Release ${{ steps.ver.outputs.version }}"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           foreach ($f in $toUpload) {
             Push-Location $f.Directory.FullName
-            gh release upload $tag $f.Name --clobber
+            gh release upload $tag $f.Name --clobber --repo $repo
             $code = $LASTEXITCODE
             Pop-Location
             if ($code -ne 0) { exit $code }
