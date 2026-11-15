@@ -1,11 +1,11 @@
-name: Release (reusable)
+name: Release
 
 # ============================================================================
 #  One reusable "tag → release" pipeline for every project. A tag (from
 #  release-please merging its Release PR, or a manual `git tag vX.Y.Z`) runs:
 #
-#      checkout → load env-JSON → resolve version → setup toolchain →
-#      [version stamp] → [frontend build] → build → attach binaries →
+#      checkout → load env-JSON → resolve version → language preset →
+#      [frontend build] → [version stamp] → build → attach binaries →
 #      append "### Contributors" to the Release body → [post-publish hook]
 #
 #  The CHANGELOG.md in the repo stays clean — release-please owns it and it
@@ -24,13 +24,13 @@ name: Release (reusable)
 #          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}   # for `gh release edit`
 #          env:   ${{ secrets.PROJECT_RELEASE_ENV }}    # JSON {"KEY":"val",...}
 #        with:
-#          language: rust
-#          build-command: cargo build --release -p myapp
-#          artifacts: target/release/myapp.exe
+#          language: go
+#          build-command: go build -o dist/app.exe ./cmd/app
+#          artifacts: dist/app.exe
 #
 #  ── Hooks (all optional, all pwsh, all see $env:VERSION + $env:TAG) ────────
 #    setup-command        runs pre-build — e.g. stamp $env:VERSION into
-#                         Cargo.toml / package.json / AssemblyInfo.cs.
+#                         Cargo.toml / package.json, codegen, pip install.
 #    post-publish-command runs after attach — e.g. publish a self-update
 #                         pointer to R2/S3, bump a "latest" file, notify.
 #
@@ -38,20 +38,21 @@ name: Release (reusable)
 #    token   PAT used for `gh release edit` (contributors body). Falls back to
 #            github.token when unset — enough for same-repo edits.
 #    env     One JSON object carrying the project's whole env — keeps secrets
-#            out of the caller YAML. `{"S1L_R2_BUCKET":"x","API_KEY":"y"}` is
-#            injected into every step via `Load project env`.
+#            out of the caller YAML. `{"API_KEY":"y","BUCKET":"x"}` is injected
+#            into every step via `Load project env`.
 #
 #  ── Per-input reference ───────────────────────────────────────────────────
 #    version           manual-dispatch version (ignored on tag push)
 #    tag-prefix        strip this from the tag → version ("v" default; "" for
 #                      bare `0.1.4`; "pkg-v" for monorepo `pkg-v0.1.4`)
 #    runner            windows-latest | ubuntu-latest | macos-latest
-#    language          rust (toolchain+cache) | node | go | custom (none preset)
+#    language          rust (toolchain+cache) | node | go | dotnet | python |
+#                      custom (no preset — drive it via setup/build-command)
 #    node_version      node for the frontend step (default 24)
-#    node_workdir      dir with package-lock.json → runs `npm ci && npm run
-#                      build` there; empty = skip frontend
-#    artifacts         newline/space-separated file paths or globs attached to
-#                      the Release — the shippable binaries only (not dev CLIs)
+#    node_workdir      dir with package-lock.json → `npm ci` + `npm run build`;
+#                      empty skips the frontend build
+#    artifacts         newline/space-separated paths or globs attached to the
+#                      Release — shippable binaries only
 #    contributors      bool — append the Contributors section (default true)
 # ============================================================================
 
@@ -73,12 +74,12 @@ on:
         default: windows-latest
         type: string
       language:
-        description: "rust | node | go | custom — picks the toolchain preset (custom = none; drive it all via setup/build-command)."
+        description: "rust | node | go | dotnet | python | custom — picks the toolchain preset (custom = none; drive it all via setup/build-command)."
         required: false
         default: custom
         type: string
       node_version:
-        description: "Node version for the frontend step (when node_workdir set)."
+        description: "Node version for the frontend/npm step."
         required: false
         default: "24"
         type: string
@@ -88,7 +89,7 @@ on:
         default: ""
         type: string
       setup-command:
-        description: "pwsh run before build (version stamp, codegen). $env:VERSION + $env:TAG set."
+        description: "pwsh run before build (version stamp, codegen, deps). $env:VERSION + $env:TAG set."
         required: false
         default: ""
         type: string
@@ -106,7 +107,7 @@ on:
         default: true
         type: boolean
       post-publish-command:
-        description: "pwsh run after attach (publish self-update pointer, notify). $env:VERSION/$env:TAG set; env-JSON loaded."
+        description: "pwsh run after attach (publish pointer, notify). $env:VERSION/$env:TAG set; env-JSON loaded."
         required: false
         default: ""
         type: string
@@ -125,19 +126,20 @@ jobs:
   release:
     name: resolve → build → attach → contributors → post-publish
     runs-on: ${{ inputs.runner }}
+    env:
+      # secrets can't sit in `if:` conditions — map the env-JSON here so steps
+      # can test `env.PROJ_ENV != ''` instead.
+      PROJ_ENV: ${{ secrets.env }}
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0   # contributors needs full history to flag first-timers
 
-      # Inject the project's env-JSON so every later step sees it.
       - name: Load project env
-        if: ${{ secrets.env != '' }}
+        if: ${{ env.PROJ_ENV != '' }}
         shell: pwsh
-        env:
-          ENV_JSON: ${{ secrets.env }}
         run: |
-          ($env:ENV_JSON | ConvertFrom-Json).PSObject.Properties | ForEach-Object {
+          ($env:PROJ_ENV | ConvertFrom-Json).PSObject.Properties | ForEach-Object {
             "$($_.Name)=$($_.Value)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           }
 
@@ -162,6 +164,7 @@ jobs:
           "TAG=$tag"     | Out-File $env:GITHUB_ENV -Append
           Write-Output "Releasing v$v (tag $tag)"
 
+      # ── Language presets (pick one via `language:`; `custom` = none) ──────
       - name: Setup Rust
         if: ${{ inputs.language == 'rust' }}
         uses: dtolnay/rust-toolchain@stable
@@ -170,8 +173,26 @@ jobs:
         if: ${{ inputs.language == 'rust' }}
         uses: Swatinem/rust-cache@v2
 
+      - name: Setup Go
+        if: ${{ inputs.language == 'go' }}
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+
+      - name: Setup Python
+        if: ${{ inputs.language == 'python' }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+
+      - name: Setup .NET
+        if: ${{ inputs.language == 'dotnet' }}
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.x"
+
       - name: Setup Node
-        if: ${{ inputs.node_workdir != '' || inputs.language == 'node' }}
+        if: ${{ inputs.language == 'node' || inputs.node_workdir != '' }}
         uses: actions/setup-node@v5
         with:
           node-version: ${{ inputs.node_version }}
