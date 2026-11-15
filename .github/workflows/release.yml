@@ -371,8 +371,9 @@ jobs:
           [ -n "$NODE_WORKDIR" ] && stamp "$NODE_WORKDIR/package.json"
           while IFS= read -r f; do
             f="$(echo "$f" | tr -d '\r' | xargs)"
-            [ -n "$f" ] && stamp "$f"
+            [ -n "$f" ] && stamp "$f" || true
           done <<< "$VERSION_FILES"
+          exit 0   # a trailing `[ -n ... ]` on an empty VERSION_FILES exits 1
 
       # `shell:` on a step can't take an expression — the input is resolved by
       # routing: bash runs the hook inline; any other shell wraps it as
