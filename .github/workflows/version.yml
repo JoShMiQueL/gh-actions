@@ -2,16 +2,18 @@ name: Version
 
 # This repo versions itself — same machinery it ships to callers.
 #   push to main → release-please maintains the Release PR
-#   merge it     → tag v1.x.y created → post-publish moves the floating
-#                  `v1` major tag so callers pin @v1
+#   merge it     → rp creates tag v1.x.y + Release in THIS SAME run →
+#                  the floating-major step moves `v1` to it
+#
+# Why the major tag moves HERE and not on tag-push: release-please-action
+# creates the release tag via the API with the job's GITHUB_TOKEN — that
+# push does NOT re-trigger workflows (bot push, no cascade), so a
+# `on.push.tags` listener never fires. Doing it in the same run, right
+# after rp reports `releases_created`, is the reliable path.
 #
 # `contributors: false` — a tooling repo doesn't need a Contributors
-# section in its own releases; release.yml still proves itself via the
-# release-please job that runs on every main push.
-#
-# The `major-tag` job keeps the floating major (`v1`, `v0`…) pointing at
-# the newest tag — that's the ref production callers pin (`uses: ...@v1`)
-# while the exact tag stays for pinning/audit.
+# section in its own releases.
+
 on:
   push:
     branches: [main]
@@ -37,27 +39,39 @@ jobs:
       release-please: true
 
   # Floating major tag — production callers pin @v1, this keeps it fresh.
-  # Only runs when a real version tag lands (not on branch pushes or
-  # manual dispatch tags like 0.0.0-test which carry no release weight).
+  # Runs on every event (after the release job) but is fully idempotent:
+  # if the newest version tag is already the major's target it exits 0.
+  # Prereleases never move the major.
   major-tag:
-    if: ${{ github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
+    needs: release
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Move major tag to this release
+        with:
+          fetch-depth: 0
+      - name: Move major tag to the newest release tag
         env:
           GH_TOKEN: ${{ secrets.token || github.token }}
           REPO: ${{ github.repository }}
         shell: bash
         run: |
-          tag="$GITHUB_REF_NAME"
-          # tag must look like a version tag — guard against junk tags
+          git fetch --tags -f -q
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            tag="$GITHUB_REF_NAME"
+          elif [ -n "${{ inputs.version }}" ]; then
+            tag="v${{ inputs.version }}"
+          else
+            # branch push: newest version tag (rp may have just created it)
+            tag="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)"
+          fi
+          [ -z "$tag" ] && { echo "no version tag found"; exit 0; }
           [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]] || { echo "not a version tag: $tag"; exit 0; }
-          major="${tag%%.*}"                       # v1.2.3 → v1
-          # skip prereleases — don't move v1 onto a beta
           [[ "$tag" == *-* ]] && { echo "prerelease $tag — major tag stays"; exit 0; }
+          major="${tag%%.*}"
+          if [ "$(git rev-parse "$major" 2>/dev/null)" = "$(git rev-parse "$tag")" ]; then
+            echo "$major already at $tag"; exit 0
+          fi
           echo "moving $major → $tag"
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -fa "$major" "$tag" -m "floating major → $tag"
           git push -f origin "refs/tags/$major"
