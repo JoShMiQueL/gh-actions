@@ -442,6 +442,9 @@ jobs:
 
           # `gh release upload` glob-mangles path args on Windows — upload the
           # BASENAME from inside the file's dir, the only form it can't break.
+          # Artifacts must resolve INSIDE the workspace — absolute paths or
+          # `..` escapes could exfiltrate runner files onto a public Release.
+          ws="$(pwd -P)"
           rc=0
           while IFS= read -r pat; do
             pat="$(echo "$pat" | tr -d '\r' | xargs)"
@@ -449,6 +452,11 @@ jobs:
             matched=0
             for f in $pat; do   # intentional unquoted glob expansion
               [ -e "$f" ] || continue
+              real="$(cd "$(dirname "$f")" 2>/dev/null && pwd -P)/$(basename "$f")"
+              case "$real" in
+                "$ws"/*) ;;   # inside workspace — ok
+                *) echo "::error::artifact escapes the workspace, refused: $pat"; rc=1; continue ;;
+              esac
               matched=1
               if ! (cd "$(dirname "$f")" && gh release upload "$TAG" "$(basename "$f")" --clobber --repo "$REPO"); then
                 echo "::error::gh release upload failed for $f"; rc=1
