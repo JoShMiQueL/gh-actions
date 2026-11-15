@@ -273,10 +273,14 @@ jobs:
           TOOLCHAIN: ${{ inputs.toolchain }}
         run: |
           declare -A def=( [rust]=stable [go]=stable [python]="3.x" [dotnet]="8.x" [bun]=latest [node]="lts/*" )
+          builtins="rust go python dotnet bun node custom"
           for tok in $TOOLCHAIN; do
             name="${tok%%@*}"
             ver="${tok#*@}"; [ "$ver" = "$tok" ] && ver=""
             [ -z "$ver" ] && ver="${def[$name]:-latest}"
+            if [[ " $builtins " != *" $name "* ]]; then
+              echo "::warning::toolchain token '$name' is not a built-in preset — nothing will install it. Use 'custom' + setup-command for exotic stacks."
+            fi
             echo "${name}-version=${ver}" >> "$GITHUB_OUTPUT"
           done
 
