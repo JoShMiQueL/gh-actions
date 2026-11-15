@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.1](https://github.com/JoShMiQueL/gh-actions/compare/v1.1.0...v1.1.1) (2026-11-15)
+
+
+### Bug Fixes
+
+* **version.yml:** bot-pushed tags never re-trigger — move floating major inside the same run (after rp), idempotent: newest version tag → major ([e0899e3](https://github.com/JoShMiQueL/gh-actions/commit/e0899e3caa42f36150aa7c5245edb74ea9087a14))
+* **version.yml:** degrade major-tag to warning when token lacks workflows perm — needs a fine-grained PAT with 'workflows', GITHUB_TOKEN/gho_ are hard-blocked by GitHub ([b0bcb85](https://github.com/JoShMiQueL/gh-actions/commit/b0bcb856cf7658e920e5fd068b7bc7ddaa86d171))
+* **version.yml:** git push needs PAT in remote URL — GITHUB_TOKEN auth header covers API not git writes (exit 128 on tag push) ([0df2f3f](https://github.com/JoShMiQueL/gh-actions/commit/0df2f3f0b5eeb898e9708b91c39da346a5837c0b))
+* **version.yml:** git push rejected by workflows-permission check — update the floating major ref via REST git-refs API instead (no smart-HTTP validation) ([0dae06b](https://github.com/JoShMiQueL/gh-actions/commit/0dae06b99c3dff1181241ca470fd5478f7c23317))
+* **version.yml:** git tag -fa -m needs user identity (empty ident exit 128) ([84f2188](https://github.com/JoShMiQueL/gh-actions/commit/84f21881835332c96f415a336b6bbf68fc417c33))
+* **version.yml:** GITHUB_TOKEN not the PAT for git/refs — gho_ OAuth gets 'not accessible by integration', the job token is the integration identity ([4a5dd11](https://github.com/JoShMiQueL/gh-actions/commit/4a5dd112e12bd7f6ac826e1326036840bd32e024))
+* **version.yml:** use GITHUB_TOKEN (checkout persisted) — it can push tags on existing commits; OAuth tokens get 'workflows permission' rejected when the referenced commit touches .github/workflows ([83f8533](https://github.com/JoShMiQueL/gh-actions/commit/83f85336eef8b466c8ace546bd73568a775a9d8f))
+
 ## [1.1.0](https://github.com/JoShMiQueL/gh-actions/compare/v1.0.0...v1.1.0) (2026-11-15)
 
 
