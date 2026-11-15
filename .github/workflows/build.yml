@@ -552,9 +552,12 @@ jobs:
             done <<< "$INCLUDE"
             case "$fmt" in
               zip)
-                # bsdtar -a makes zip on every OS; --force-local keeps it from
-                # reading "D:\a\..." as a remote host:path. Fallback: pwsh.
-                if ! (cd "$pkg" && tar -acf "$RUNNER_TEMP/$aname.zip" --force-local .) 2>/dev/null; then
+                # GNU tar (Git Bash) has no zip support — its -a writes a tar
+                # with a .zip name = corrupt. Real zip: bsdtar -a where
+                # present (macOS/Linux ship it), else pwsh Compress-Archive.
+                if tar --version 2>/dev/null | grep -qi bsdtar; then
+                  (cd "$pkg" && tar -acf "$RUNNER_TEMP/$aname.zip" .)
+                else
                   pwsh -NoProfile -Command "Compress-Archive -Path '$(cygpath -w "$pkg")/*' -DestinationPath '$(cygpath -w "$RUNNER_TEMP/$aname.zip")' -Force" \
                     || { echo "::error::zip archive failed"; exit 1; }
                 fi ;;
