@@ -5,40 +5,46 @@ name: Build
 #
 #  release.yml augments release-please (Release body, title, Contributors).
 #  THIS workflow is the CI half for projects that compile: toolchain →
-#  [frontend] → version-stamp → setup → build → attach artifacts →
-#  [post-publish]. Call it as a SECOND job in the same caller file — both
-#  jobs fire on the same tag push and run in parallel:
+#  [frontend] → version-stamp → setup → build → package (rename/archive/
+#  checksums) → attach → [post-publish]. Call it as a SECOND job in the same
+#  caller file — both jobs fire on the same tag push and run in parallel.
 #
-#    jobs:
-#      release:                                   # rp augmentation — always
-#        uses: .../release.yml@main
-#        secrets: { token: ${{ secrets.RELEASE_PLEASE_TOKEN }} }
+#  ── Multi-platform: put the matrix on the CALLER job (taiki-e pattern) ─────
+#    build:
+#      if: ${{ github.ref_type == 'tag' || inputs.version != '' }}
+#      strategy:
+#        fail-fast: false
+#        matrix:
+#          include:
+#            - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu }
+#            - { os: windows-latest, target: x86_64-pc-windows-msvc   }
+#            - { os: macos-latest,   target: x86_64-apple-darwin      }
+#      uses: .../build.yml@main
+#      with:
+#        runner: ${{ matrix.os }}
+#        target: ${{ matrix.target }}
+#        toolchain: rust
+#        build-command: cargo build --release --target $TARGET
+#        artifacts: target/$TARGET/release/myapp*
+#        archive: auto                       # zip on Windows, tar.gz elsewhere
+#        archive-name: "{name}-{version}-{target}"
+#        checksums: sha256
 #
-#      build:                                     # only when binaries ship
-#        if: ${{ github.ref_type == 'tag' || inputs.version != '' }}
-#        uses: .../build.yml@main
-#        secrets:
-#          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
-#          env-json: ${{ secrets.PROJECT_RELEASE_ENV }}
-#        with:
-#          toolchain: "rust node@24"
-#          build-command: cargo build --release
-#          artifacts: target/release/app.exe
-#
-#  The two jobs touch different Release fields — release.yml edits the body
-#  (notes/contributors), build.yml uploads assets — so they don't conflict.
-#  If the Release doesn't exist yet when this job lands, this job creates it.
+#  Each leg uploads myapp-1.2.0-x86_64-pc-windows-msvc.zip + .sha256 — no
+#  asset-name collisions because {target} differs per leg.
 #
 #  ── Secrets ────────────────────────────────────────────────────────────────
-#    token    PAT or GITHUB_TOKEN for `gh release create/upload`.
+#    token    PAT or GITHUB_TOKEN for `gh release create/upload/edit`.
 #    env-json One JSON object = the project's env, injected into every step
 #             with each value `::add-mask::`ed first. Named env-json because
 #             bare `env` is a reserved secret name in workflow_call. Lets a
 #             project pass ANY secret set to its hooks without this reusable
 #             knowing the names — `with:` inputs can't carry secrets.
 #
-#  ── Hooks — all optional, all run in `shell` (bash default), all see ────────
-#     $VERSION + $TAG exported to GITHUB_ENV plus every env-json var.
+#  ── Hooks — all optional, run in `shell` (bash default), see ────────────────
+#     $VERSION $TAG $TARGET exported to GITHUB_ENV, plus every env-json var.
+#     $ASSETS_DIR + $ASSETS (newline list) are exported after packaging, so
+#     post-publish sees the final filenames actually uploaded.
 #     IMPORTANT: `with:` inputs evaluate BEFORE the reusable runs — GitHub's
 #     `${{ env.VERSION }}` does NOT exist there. Use the SHELL variable inside
 #     the hook body: `$VERSION` (bash) / `$env:VERSION` (pwsh).
@@ -46,11 +52,13 @@ name: Build
 #    post-publish-command after attach — publish a self-update pointer, notify.
 #
 #  ── Inputs (grouped) ────────────────────────────────────────────────────────
-#    trigger   version, tag-prefix, runner, shell
+#    trigger   version, tag-prefix, runner, shell, working-directory
 #    toolchain toolchain (name[@version] tokens), node_workdir
 #    version   version-bump (auto|none), version-files
-#    build     setup-command, build-command, artifacts
-#    release   release-title, prerelease, draft  (only if this job creates it)
+#    build     target, setup-command, build-command
+#    package   artifacts, artifact-name, archive, archive-name, include,
+#              checksums, fail-on-unmatched-artifacts
+#    release   release-title, prerelease, draft, make-latest, discussion-category
 #    hooks     post-publish-command
 # ============================================================================
 
@@ -77,6 +85,11 @@ on:
         description: "Shell the hook commands (setup/build/post-publish) run in — bash | pwsh | sh | cmd | python. Internal steps always use bash (Git Bash on Windows). Choose pwsh when your hooks need PowerShell syntax."
         required: false
         default: bash
+        type: string
+      working-directory:
+        description: "Subdirectory to cd into after checkout — monorepo support. Stamp, hooks, build and artifact patterns all resolve relative to it (toolchain setup is runner-global anyway)."
+        required: false
+        default: ""
         type: string
       # ── toolchain ────────────────────────────────────────────────────────
       toolchain:
@@ -121,22 +134,58 @@ on:
         default: ""
         type: string
       # ── build ────────────────────────────────────────────────────────────
+      target:
+        description: "Build target triple/name (x86_64-pc-windows-msvc, linux/arm64, universal2…) — exported as $TARGET for hooks and usable in artifact-name/archive-name templates as {target}. Does not imply cross-compilation; your build-command uses it (e.g. `cargo build --target $TARGET`)."
+        required: false
+        default: ""
+        type: string
       setup-command:
-        description: "Runs after version-stamp, before build — codegen, extra deps, patches. Shell = `shell` input; sees $VERSION + $TAG."
+        description: "Runs after version-stamp, before build — codegen, extra deps, patches. Shell = `shell` input; sees $VERSION + $TAG + $TARGET."
         required: false
         default: ""
         type: string
       build-command:
-        description: "The release build. Shell = `shell` input; sees $VERSION + $TAG. Optional when only node_workdir builds (frontend-only project)."
+        description: "The release build. Shell = `shell` input; sees $VERSION + $TAG + $TARGET. Optional when only node_workdir builds (frontend-only project)."
         required: false
         default: ""
         type: string
+      # ── package ──────────────────────────────────────────────────────────
       artifacts:
-        description: "Files/globs to attach to the Release, one per line — shippable binaries only. Missing files fail the run loudly. Empty = build but attach nothing."
+        description: "Files/globs to attach to the Release, one per line — shippable binaries only. Missing files fail the run loudly (see fail-on-unmatched-artifacts). Empty = build but attach nothing."
         required: false
         default: ""
         type: string
-      # ── release metadata (used only if THIS job creates the Release) ─────
+      artifact-name:
+        description: "Rename template applied to each uploaded artifact — '{name}' '{version}' '{tag}' '{target}' '{basename}' '{stem}' '{ext}' expand. Use it so matrix legs don't collide: '{stem}-{target}.{ext}'. Empty = keep the filename."
+        required: false
+        default: ""
+        type: string
+      archive:
+        description: "Pack all artifacts (plus `include` files) into ONE archive instead of raw files — none | zip | tar.gz | auto (auto: zip when RUNNER_OS=Windows, tar.gz otherwise). Naming via archive-name."
+        required: false
+        default: none
+        type: string
+      archive-name:
+        description: "Archive name template — '{name}' '{version}' '{tag}' '{target}' expand (extension appended by `archive`). Default '{name}-{version}-{target}' → myapp-1.2.0-x86_64-pc-windows-msvc.zip."
+        required: false
+        default: "{name}-{version}-{target}"
+        type: string
+      include:
+        description: "Extra files packed INTO the archive (one per line) — LICENSE, README.md, config examples. Only meaningful when archive != none. Missing include files warn, not fail."
+        required: false
+        default: ""
+        type: string
+      checksums:
+        description: "Generate a per-asset checksum file for each uploaded file — none | sha256 | sha512 | 'sha256 sha512'. Produces <asset>.<algo> next to each asset (industry-standard for download verification)."
+        required: false
+        default: none
+        type: string
+      fail-on-unmatched-artifacts:
+        description: "true (default): an artifacts line that matches nothing fails the run — you ship binaries, silence = broken build. false: warn and continue (for optional/conditional outputs)."
+        required: false
+        default: true
+        type: boolean
+      # ── release metadata (used when THIS job creates/flags the Release) ──
       release-title:
         description: "Title template if this job happens to create the Release ('{version}'/'{tag}' expand). release.yml normally owns the title — keep them consistent or leave empty."
         required: false
@@ -152,15 +201,25 @@ on:
         required: false
         default: false
         type: boolean
+      make-latest:
+        description: "Set the Release as 'latest' — auto (let GitHub decide: non-prereleases become latest) | true | false (explicitly un-latest, e.g. maintenance releases on old branches)."
+        required: false
+        default: auto
+        type: string
+      discussion-category:
+        description: "If set, GitHub opens a Discussion under this existing category linked to the Release (create-time only)."
+        required: false
+        default: ""
+        type: string
       # ── hooks ────────────────────────────────────────────────────────────
       post-publish-command:
-        description: "Runs after attach — publish a self-update pointer, bump a 'latest' file, notify. Shell = `shell` input; sees $VERSION + $TAG + env-json vars."
+        description: "Runs after attach — publish a self-update pointer, bump a 'latest' file, notify. Shell = `shell` input; sees $VERSION + $TAG + $TARGET + $ASSETS_DIR + env-json vars."
         required: false
         default: ""
         type: string
     secrets:
       token:
-        description: "PAT or GITHUB_TOKEN for `gh release create/upload`. Falls back to github.token."
+        description: "PAT or GITHUB_TOKEN for `gh release create/upload/edit`. Falls back to github.token."
         required: false
       env-json:
         description: "JSON object of env vars injected (masked) into every step — keeps per-project secrets out of the caller YAML."
@@ -217,12 +276,15 @@ jobs:
 
       # tag → version. v0.1.4→0.1.4, pkg-v0.1.4→0.1.4 (prefix "pkg-v"),
       # 0.1.4→0.1.4 (prefix ""). Manual dispatch synthesizes tag = prefix+ver.
+      # Also exports WORKDIR (validated) + TARGET so every later step just cds.
       - name: Resolve tag + version
         id: ver
         shell: bash
         env:
           TAG_PREFIX: ${{ inputs.tag-prefix }}
           INPUT_VERSION: ${{ inputs.version }}
+          WORKDIR_IN: ${{ inputs.working-directory }}
+          TARGET_IN: ${{ inputs.target }}
         run: |
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             tag="$GITHUB_REF_NAME"
@@ -237,8 +299,16 @@ jobs:
           [ -z "$v" ] && { echo "::error::no version resolved — pass 'version' on dispatch or push a tag"; exit 1; }
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "tag=$tag"     >> "$GITHUB_OUTPUT"
-          { echo "VERSION=$v"; echo "TAG=$tag"; } >> "$GITHUB_ENV"
-          echo "Building v$v (tag $tag)"
+
+          if [ -n "$WORKDIR_IN" ]; then
+            [ -d "$WORKDIR_IN" ] || { echo "::error::working-directory '$WORKDIR_IN' does not exist"; exit 1; }
+            wd="$(cd "$WORKDIR_IN" && pwd -P)"
+          else
+            wd="$(pwd -P)"
+          fi
+
+          { echo "VERSION=$v"; echo "TAG=$tag"; echo "WORKDIR=$wd"; echo "TARGET=$TARGET_IN"; } >> "$GITHUB_ENV"
+          echo "Building v$v (tag $tag) in $wd"
 
       # Parse `toolchain` tokens `name[@ver]` → outputs `<name>-version` used by
       # the setup actions below. Missing @ver → the preset's default.
@@ -270,6 +340,8 @@ jobs:
       - name: Rust cache
         if: ${{ contains(inputs.toolchain, 'rust') }}
         uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ inputs.working-directory }}
 
       - name: Setup Go
         if: ${{ contains(inputs.toolchain, 'go') }}
@@ -324,6 +396,7 @@ jobs:
           NODE_WORKDIR: ${{ inputs.node_workdir }}
           VERSION_FILES: ${{ inputs.version-files }}
         run: |
+          cd "$WORKDIR"
           stamp() {
             local f="$1"
             if [ -f "$f" ]; then
@@ -366,6 +439,7 @@ jobs:
           HOOK: ${{ inputs.setup-command }}
           HOOK_SHELL: ${{ inputs.shell }}
         run: |
+          cd "$WORKDIR"
           if [ "$HOOK_SHELL" = "bash" ] || [ "$HOOK_SHELL" = "sh" ]; then
             eval "$HOOK"
           else
@@ -379,27 +453,142 @@ jobs:
           HOOK: ${{ inputs.build-command }}
           HOOK_SHELL: ${{ inputs.shell }}
         run: |
+          cd "$WORKDIR"
           if [ "$HOOK_SHELL" = "bash" ] || [ "$HOOK_SHELL" = "sh" ]; then
             eval "$HOOK"
           else
             "$HOOK_SHELL" -NoProfile -Command "$HOOK"
           fi
 
+      # Package: resolve globs → enforce workspace confinement → optional
+      # rename → optional archive → optional checksums → stage everything in
+      # $RUNNER_TEMP/release-assets. `gh release upload` then only ever sees
+      # basenames inside that dir — the one form Windows can't mangle, and it
+      # makes the uploaded name independent of the build-tree path.
+      - name: Package artifacts
+        shell: bash
+        env:
+          ARTIFACTS: ${{ inputs.artifacts }}
+          ARTIFACT_NAME: ${{ inputs.artifact-name }}
+          ARCHIVE: ${{ inputs.archive }}
+          ARCHIVE_NAME: ${{ inputs.archive-name }}
+          INCLUDE: ${{ inputs.include }}
+          CHECKSUMS: ${{ inputs.checksums }}
+          FAIL_UNMATCHED: ${{ inputs.fail-on-unmatched-artifacts }}
+          NAME_IN: ${{ github.event.repository.name }}
+        run: |
+          cd "$WORKDIR"
+          ws="$(pwd -P)"
+          stage="$RUNNER_TEMP/release-assets"
+          rm -rf "$stage"; mkdir -p "$stage"
+
+          expand() {  # template expander: {name} {version} {tag} {target} {basename} {stem} {ext}
+            local t="$1" base="${2:-}" stem="${3:-}" ext="${4:-}"
+            t="${t//\{name\}/$NAME_IN}"
+            t="${t//\{version\}/$VERSION}"
+            t="${t//\{tag\}/$TAG}"
+            t="${t//\{target\}/$TARGET}"
+            t="${t//\{basename\}/$base}"
+            t="${t//\{stem\}/$stem}"
+            t="${t//\{ext\}/$ext}"
+            echo "$t"
+          }
+
+          # 1 — resolve artifact patterns (workspace-confined)
+          rc=0
+          declare -a files=()
+          while IFS= read -r pat; do
+            pat="$(echo "$pat" | tr -d '\r' | xargs)"
+            [ -z "$pat" ] && continue
+            matched=0
+            for f in $pat; do   # intentional unquoted glob expansion
+              [ -e "$f" ] || continue
+              real="$(cd "$(dirname "$f")" 2>/dev/null && pwd -P)/$(basename "$f")"
+              case "$real" in
+                "$ws"/*) ;;   # inside workspace — ok
+                *) echo "::error::artifact escapes the workspace, refused: $pat"; rc=1; continue ;;
+              esac
+              matched=1
+              files+=("$real")
+            done
+            if [ "$matched" = 0 ]; then
+              if [ "$FAIL_UNMATCHED" = "true" ]; then
+                echo "::error::artifact not found: $pat"; rc=1
+              else
+                echo "::warning::artifact not found, skipped: $pat"
+              fi
+            fi
+          done <<< "$ARTIFACTS"
+          [ $rc -ne 0 ] && exit $rc
+
+          # 2 — rename into staging (collision-safe)
+          declare -A seen=()
+          for f in "${files[@]}"; do
+            base="$(basename "$f")"
+            stem="${base%.*}"; ext="${base##*.}"; [ "$ext" = "$base" ] && ext=""
+            if [ -n "$ARTIFACT_NAME" ]; then
+              dest="$(expand "$ARTIFACT_NAME" "$base" "$stem" "$ext")"
+              [[ "$dest" == */* || "$dest" == *..* ]] && { echo "::error::artifact-name produced an unsafe name: $dest"; exit 1; }
+            else
+              dest="$base"
+            fi
+            [ -n "${seen[$dest]:-}" ] && { echo "::error::two artifacts map to '$dest' — disambiguate with {basename}/{stem} in artifact-name"; exit 1; }
+            seen[$dest]=1
+            cp "$f" "$stage/$dest"
+          done
+
+          # 3 — optional archive: everything staged + include files → one file
+          if [ "$ARCHIVE" != "none" ] && [ ${#seen[@]} -gt 0 ]; then
+            fmt="$ARCHIVE"
+            [ "$fmt" = "auto" ] && { [ "$RUNNER_OS" = "Windows" ] && fmt=zip || fmt=tar.gz; }
+            aname="$(expand "$ARCHIVE_NAME")"
+            pkg="$RUNNER_TEMP/pkg"; rm -rf "$pkg"; mkdir -p "$pkg"
+            cp "$stage"/* "$pkg/" 2>/dev/null || true
+            while IFS= read -r inc; do
+              inc="$(echo "$inc" | tr -d '\r' | xargs)"
+              [ -z "$inc" ] && continue
+              if [ -f "$inc" ]; then cp "$inc" "$pkg/$(basename "$inc")"
+              else echo "::warning::include file not found, skipped: $inc"; fi
+            done <<< "$INCLUDE"
+            case "$fmt" in
+              zip)    (cd "$pkg" && tar -acf "$RUNNER_TEMP/$aname.zip" .)    || (cd "$pkg" && zip -qr "$RUNNER_TEMP/$aname.zip" .) ;;
+              tar.gz) (cd "$pkg" && tar -czf "$RUNNER_TEMP/$aname.tar.gz" .) ;;
+              *) echo "::error::unknown archive format '$fmt' — none|zip|tar.gz|auto"; exit 1 ;;
+            esac
+            rm -rf "$stage"; mkdir -p "$stage"
+            [ "$fmt" = "zip" ] && mv "$RUNNER_TEMP/$aname.zip" "$stage/" || mv "$RUNNER_TEMP/$aname.tar.gz" "$stage/"
+            echo "archived ${#seen[@]} artifact(s) + includes → $(basename "$stage/"*)"
+          fi
+
+          # 4 — checksums per staged file
+          for algo in $CHECKSUMS; do
+            [ "$algo" = "none" ] && continue
+            case "$algo" in sha256|sha512) ;; *) echo "::error::unknown checksum algo '$algo'"; exit 1;; esac
+            for f in "$stage"/*; do
+              [ -f "$f" ] || continue
+              [[ "$f" == *.sha256 || "$f" == *.sha512 ]] && continue
+              (cd "$stage" && "${algo}sum" "$(basename "$f")" > "$(basename "$f").$algo")
+              echo "checksum: $(basename "$f").$algo"
+            done
+          done
+
+          # export for the attach step + post-publish hooks
+          ls -la "$stage"
+          echo "ASSETS_DIR=$stage" >> "$GITHUB_ENV"
+          { echo "ASSETS<<EOF"; ls "$stage"; echo "EOF"; } >> "$GITHUB_ENV"
+
       # release-please (or a sibling release.yml job) normally created the
       # Release already — this job may win the race and create it. Either way
-      # it must exist before upload. `gh release upload` glob-mangles path
-      # args on Windows — upload the BASENAME from inside the file's dir, the
-      # only form it can't break. Artifacts must resolve INSIDE the workspace
-      # — absolute paths or `..` escapes could exfiltrate runner files onto a
-      # public Release.
+      # it must exist before upload.
       - name: Attach artifacts to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.token || github.token }}
           REPO: ${{ github.repository }}
-          ARTIFACTS: ${{ inputs.artifacts }}
           RELEASE_TITLE: ${{ inputs.release-title }}
           PRERELEASE_IN: ${{ inputs.prerelease }}
           DRAFT_IN: ${{ inputs.draft }}
+          MAKE_LATEST: ${{ inputs.make-latest }}
+          DISCUSSION: ${{ inputs.discussion-category }}
           VER: ${{ steps.ver.outputs.version }}
           TAG: ${{ steps.ver.outputs.tag }}
         shell: bash
@@ -410,6 +599,7 @@ jobs:
           flags=()
           $is_pre && flags+=(--prerelease)
           [ "$DRAFT_IN" = "true" ] && flags+=(--draft)
+          [ -n "$DISCUSSION" ] && flags+=(--discussion-category "$DISCUSSION")
 
           if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
             title="${RELEASE_TITLE//\{version\}/$VER}"
@@ -424,28 +614,25 @@ jobs:
             done
             gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1 \
               || { echo "::error::release $TAG still missing after create"; exit 1; }
+          else
+            if $is_pre || [ "$DRAFT_IN" = "true" ]; then
+              gh release edit "$TAG" --repo "$REPO" "${flags[@]}" || true
+            fi
           fi
 
-          ws="$(pwd -P)"
           rc=0
-          while IFS= read -r pat; do
-            pat="$(echo "$pat" | tr -d '\r' | xargs)"
-            [ -z "$pat" ] && continue
-            matched=0
-            for f in $pat; do   # intentional unquoted glob expansion
-              [ -e "$f" ] || continue
-              real="$(cd "$(dirname "$f")" 2>/dev/null && pwd -P)/$(basename "$f")"
-              case "$real" in
-                "$ws"/*) ;;   # inside workspace — ok
-                *) echo "::error::artifact escapes the workspace, refused: $pat"; rc=1; continue ;;
-              esac
-              matched=1
-              if ! (cd "$(dirname "$f")" && gh release upload "$TAG" "$(basename "$f")" --clobber --repo "$REPO"); then
-                echo "::error::gh release upload failed for $f"; rc=1
-              fi
-            done
-            [ "$matched" = 0 ] && { echo "::error::artifact not found: $pat"; rc=1; }
-          done <<< "$ARTIFACTS"
+          for f in "$ASSETS_DIR"/*; do
+            [ -f "$f" ] || continue
+            if ! (cd "$ASSETS_DIR" && gh release upload "$TAG" "$(basename "$f")" --clobber --repo "$REPO"); then
+              echo "::error::gh release upload failed for $(basename "$f")"; rc=1
+            fi
+          done
+
+          if [ "$MAKE_LATEST" = "true" ] && ! $is_pre && [ "$DRAFT_IN" != "true" ]; then
+            gh release edit "$TAG" --repo "$REPO" --latest || true
+          elif [ "$MAKE_LATEST" = "false" ]; then
+            gh release edit "$TAG" --repo "$REPO" --latest=false || true
+          fi
           exit $rc
 
       - name: Post-publish
@@ -456,6 +643,7 @@ jobs:
           HOOK: ${{ inputs.post-publish-command }}
           HOOK_SHELL: ${{ inputs.shell }}
         run: |
+          cd "$WORKDIR"
           if [ "$HOOK_SHELL" = "bash" ] || [ "$HOOK_SHELL" = "sh" ]; then
             eval "$HOOK"
           else
