@@ -52,7 +52,10 @@ jobs:
           fetch-depth: 0
       - name: Move major tag to the newest release tag
         env:
-          GH_TOKEN: ${{ secrets.token || github.token }}
+          # GITHUB_TOKEN, not the PAT — a gho_ OAuth token gets
+          # "Resource not accessible by integration" on git/refs; the job
+          # token is the integration identity this API expects.
+          GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         shell: bash
         run: |
