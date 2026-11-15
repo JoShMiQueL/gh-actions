@@ -30,6 +30,10 @@ name: Release
 #          artifacts: dist/app.exe
 #
 #  ── Hooks (all optional, all pwsh, all see $env:VERSION + $env:TAG) ────────
+#    IMPORTANT: `with:` inputs are evaluated BEFORE the reusable runs — GitHub
+#    context `${{ env.VERSION }}` does NOT exist there (env isn't set yet).
+#    Use pwsh `$env:VERSION`/`$env:TAG` inside the hook body instead — the
+#    Resolve step exports them to GITHUB_ENV, so the hook's pwsh sees them.
 #    setup-command        runs pre-build — e.g. stamp $env:VERSION into
 #                         Cargo.toml / package.json, codegen, pip install.
 #    post-publish-command runs after attach — e.g. publish a self-update
