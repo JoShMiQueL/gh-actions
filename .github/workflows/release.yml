@@ -237,6 +237,7 @@ jobs:
       - name: Build frontend (npm ci|install + build)
         if: ${{ inputs.node_workdir != '' }}
         working-directory: ${{ inputs.node_workdir }}
+        shell: pwsh
         run: |
           if (Test-Path package-lock.json) { npm ci } else { npm install }
           npm run build
