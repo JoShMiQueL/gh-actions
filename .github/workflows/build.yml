@@ -552,11 +552,15 @@ jobs:
             done <<< "$INCLUDE"
             case "$fmt" in
               zip)
-                # GNU tar (Git Bash) has no zip support — its -a writes a tar
-                # with a .zip name = corrupt. Real zip: bsdtar -a where
-                # present (macOS/Linux ship it), else pwsh Compress-Archive.
+                # Real zip needs bsdtar (its -a), the `zip` binary, or pwsh —
+                # GNU tar -a writes a tar-with-.zip-name = corrupt. Windows Git
+                # Bash has none of bsdtar/zip → pwsh is the Windows path.
                 if tar --version 2>/dev/null | grep -qi bsdtar; then
-                  (cd "$pkg" && tar -acf "$RUNNER_TEMP/$aname.zip" .)
+                  (cd "$pkg" && tar -acf "$RUNNER_TEMP/$aname.zip" .) \
+                    || { echo "::error::zip archive failed"; exit 1; }
+                elif command -v zip >/dev/null 2>&1; then
+                  (cd "$pkg" && zip -qr "$RUNNER_TEMP/$aname.zip" .) \
+                    || { echo "::error::zip archive failed"; exit 1; }
                 else
                   pwsh -NoProfile -Command "Compress-Archive -Path '$(cygpath -w "$pkg")/*' -DestinationPath '$(cygpath -w "$RUNNER_TEMP/$aname.zip")' -Force" \
                     || { echo "::error::zip archive failed"; exit 1; }
