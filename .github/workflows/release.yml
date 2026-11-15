@@ -467,9 +467,13 @@ jobs:
         shell: bash
         run: |
           gh release view "$TAG" --repo "$REPO" --json body --jq .body > /tmp/body.md
-          printf '\n\n%s\n' "$NOTES" >> /tmp/body.md
-          gh release edit "$TAG" --repo "$REPO" --notes-file /tmp/body.md
-          echo "appended release-notes to $TAG"
+          if grep -qF "$NOTES" /tmp/body.md; then
+            echo "release-notes already present in body — skipping (idempotent re-run)"
+          else
+            printf '\n\n%s\n' "$NOTES" >> /tmp/body.md
+            gh release edit "$TAG" --repo "$REPO" --notes-file /tmp/body.md
+            echo "appended release-notes to $TAG"
+          fi
 
       # Contributors live in the Release body (the page), never CHANGELOG.md.
       # Range = prev_tag..this_tag; an author is "(new contributor)" if they
@@ -501,9 +505,13 @@ jobs:
           done
 
           gh release view "$TAG" --repo "$REPO" --json body --jq .body > /tmp/body.md
-          printf '\n\n### Contributors\n\n%s' "$section" >> /tmp/body.md
-          gh release edit "$TAG" --repo "$REPO" --notes-file /tmp/body.md
-          echo "appended Contributors to $TAG"
+          if grep -q '### Contributors' /tmp/body.md; then
+            echo "release body already has a Contributors section — skipping (idempotent re-run)"
+          else
+            printf '\n\n### Contributors\n\n%s' "$section" >> /tmp/body.md
+            gh release edit "$TAG" --repo "$REPO" --notes-file /tmp/body.md
+            echo "appended Contributors to $TAG"
+          fi
 
       - name: Post-publish
         if: ${{ inputs.post-publish-command != '' }}
