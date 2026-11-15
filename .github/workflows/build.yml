@@ -551,7 +551,13 @@ jobs:
               else echo "::warning::include file not found, skipped: $inc"; fi
             done <<< "$INCLUDE"
             case "$fmt" in
-              zip)    (cd "$pkg" && tar -acf "$RUNNER_TEMP/$aname.zip" .)    || (cd "$pkg" && zip -qr "$RUNNER_TEMP/$aname.zip" .) ;;
+              zip)
+                # bsdtar -a makes zip on every OS; --force-local keeps it from
+                # reading "D:\a\..." as a remote host:path. Fallback: pwsh.
+                if ! (cd "$pkg" && tar -acf "$RUNNER_TEMP/$aname.zip" --force-local .) 2>/dev/null; then
+                  pwsh -NoProfile -Command "Compress-Archive -Path '$(cygpath -w "$pkg")/*' -DestinationPath '$(cygpath -w "$RUNNER_TEMP/$aname.zip")' -Force" \
+                    || { echo "::error::zip archive failed"; exit 1; }
+                fi ;;
               tar.gz) (cd "$pkg" && tar -czf "$RUNNER_TEMP/$aname.tar.gz" .) ;;
               *) echo "::error::unknown archive format '$fmt' — none|zip|tar.gz|auto"; exit 1 ;;
             esac
