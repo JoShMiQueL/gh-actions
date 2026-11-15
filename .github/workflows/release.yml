@@ -495,7 +495,10 @@ jobs:
         shell: bash
         run: |
           gh release view "$TAG" --repo "$REPO" --json body --jq .body > /tmp/body.md
-          if grep -qF "$NOTES" /tmp/body.md; then
+          # Idempotency: match the first non-empty line of NOTES — a blank-line-
+          # containing $NOTES makes `grep -F` match everything and skip wrongly.
+          first_line="$(echo "$NOTES" | grep -m1 . || true)"
+          if [ -n "$first_line" ] && grep -qF "$first_line" /tmp/body.md; then
             echo "release-notes already present in body — skipping (idempotent re-run)"
           else
             printf '\n\n%s\n' "$NOTES" >> /tmp/body.md
