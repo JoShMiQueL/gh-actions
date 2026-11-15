@@ -1,61 +1,47 @@
 name: Release
 
 # ============================================================================
-#  One reusable release pipeline for every project. A caller listens on both
-#  main pushes and tags — this workflow runs ONE of its two jobs:
+#  release-please, augmented. This reusable wraps googleapis/release-please
+#  and adds what it can't do: a rich Release body and metadata.
 #
 #    push to main ──────────────► release-please job (opens/updates the
 #                                 Release PR; merging it creates tag+Release)
-#    tag push / manual dispatch ► release job: checkout → env → toolchain →
-#                                 [frontend] → [version stamp] → build →
-#                                 attach → [release-notes] → Contributors →
-#                                 [post-publish]
+#    tag push / manual dispatch ► release job: create Release if missing →
+#                                 title + prerelease/draft flags →
+#                                 [release-notes] → Contributors section
+#
+#  What it deliberately does NOT do: compile anything or attach binaries.
+#  That is CI, and every project differs (0/2/3 artifacts, matrix builds).
+#  Pair this with build.yml (same repo) in a second job when the project
+#  produces binaries — see the README.
 #
 #  ── Minimal caller — THE ONLY file a project needs ─────────────────────────
 #    on:
 #      push:
 #        branches: [main]        # release-please accumulates conventional commits
-#        tags: ["v*.*.*"]        # build+publish on tag
+#        tags: ["v*.*.*"]        # augment the Release on tag
 #      workflow_dispatch:
 #        inputs: { version: { required: false } }   # manual release (skips rp)
 #    permissions:
-#      contents: write           # tag + Release + upload
+#      contents: write           # tag + Release edit
 #      pull-requests: write      # release-please opens the Release PR
 #    jobs:
 #      release:
 #        uses: JoShMiQueL/gh-actions/.github/workflows/release.yml@main
 #        secrets:
 #          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}   # PAT — bot tags must re-trigger
-#          env-json: ${{ secrets.PROJECT_RELEASE_ENV }} # JSON {"KEY":"val",...} (optional)
 #        with:
-#          toolchain: go          # or "rust node@24", "python@3.12", …
-#          build-command: go build -o dist/app ./cmd/app
-#          artifacts: dist/app
+#          release-title: "MyApp {version}"
 #
 #  ── Secrets ────────────────────────────────────────────────────────────────
-#    token    PAT — release-please + `gh release edit`. A bot-pushed tag only
-#             re-triggers this workflow if a PAT pushed it (GITHUB_TOKEN
-#             doesn't cascade). Falls back to github.token — enough when tags
-#             come from manual `git tag`.
-#    env-json One JSON object = the project's env, injected into every step
-#             with each value `::add-mask::`ed first. Named env-json because
-#             bare `env` is a reserved secret name in workflow_call.
+#    token   PAT — release-please pushes tags + `gh release edit`. A bot-pushed
+#             tag only re-triggers this workflow if a PAT pushed it
+#             (GITHUB_TOKEN doesn't cascade). Falls back to github.token —
+#             enough when tags come from manual `git tag`.
 #
-#  ── Hooks — all optional, all run in `shell` (bash default), all see ────────
-#     $VERSION + $TAG exported to GITHUB_ENV.
-#     IMPORTANT: `with:` inputs evaluate BEFORE the reusable runs — GitHub's
-#     `${{ env.VERSION }}` does NOT exist there. Use the SHELL variable inside
-#     the hook body: `$VERSION` (bash) / `$env:VERSION` (pwsh).
-#    setup-command        after version-stamp, before build — codegen, deps.
-#    post-publish-command after attach — publish a self-update pointer, notify.
-#
-#  ── Inputs (grouped) ────────────────────────────────────────────────────────
-#    trigger   version, tag-prefix, runner, shell
-#    toolchain toolchain (name[@version] tokens), node_workdir
-#    version   version-bump (auto|none), version-files
-#    build     setup-command, build-command, artifacts
+#  ── Inputs ─────────────────────────────────────────────────────────────────
+#    trigger   version, tag-prefix, runner
 #    release   release-title, release-notes, contributors, prerelease, draft
-#    hooks     post-publish-command
 #    rp        release-please, rp-config-file, rp-manifest-file
 # ============================================================================
 
@@ -74,80 +60,18 @@ on:
         default: "v"
         type: string
       runner:
-        description: "Runner OS label — windows-latest | ubuntu-latest | macos-latest | any self-hosted label."
+        description: "Runner OS label for the metadata job — ubuntu-latest is plenty (no compilation happens here)."
         required: false
-        default: windows-latest
+        default: ubuntu-latest
         type: string
-      shell:
-        description: "Shell the hook commands (setup/build/post-publish) run in — bash | pwsh | sh | cmd | python. Internal steps always use bash (Git Bash on Windows). Choose pwsh when your hooks need PowerShell syntax."
-        required: false
-        default: bash
-        type: string
-      # ── toolchain ────────────────────────────────────────────────────────
-      toolchain:
-        description: >-
-          Toolchain(s) to provision — space/comma-separated `name[@version]`
-          tokens, or "custom" (none — install via setup-command or an earlier
-          `uses:` in your own workflow). Built-ins:
-            rust    → dtolnay/rust-toolchain + Swatinem/rust-cache  (@stable)
-            node    → actions/setup-node                            (@lts/*)
-            go      → actions/setup-go                              (@stable)
-            dotnet  → actions/setup-dotnet   (C# / F#)              (@8.x)
-            python  → actions/setup-python                          (@3.x)
-            bun     → oven-sh/setup-bun                             (@latest)
-          Versions are inline: "rust@1.75.0 python@3.12 go@1.22". Omit @ to
-          take the default shown. Multiple toolchains: "rust node@24".
-          Anything else (C++ MSVC, zig, java, flutter, deno…) = `custom` +
-          setup-command runs the installer, OR a `uses:` step before this
-          reusable call — the reusable never has to know about them.
-        required: false
-        default: custom
-        type: string
-      node_workdir:
-        description: "Dir with package.json — `npm ci` (or `npm install` when no lockfile) + `npm run build` run here, and its package.json gets version-stamped. Implies the node toolchain (version via `node@x` token, else lts/*). Empty skips the frontend."
-        required: false
-        default: ""
-        type: string
-      # ── version stamp ────────────────────────────────────────────────────
-      version-bump:
-        description: >-
-          auto (default): stamp $VERSION into the canonical manifest of each
-          active toolchain — root Cargo.toml (rust), package.json (node/bun,
-          root + node_workdir), pyproject.toml (python). Replacement = first
-          semver found in the file, so quotes/tags around it are preserved.
-          none: skip stamping — set the version yourself in setup-command.
-        required: false
-        default: auto
-        type: string
-      version-files:
-        description: "Extra files to stamp $VERSION into (one path per line) — tauri.conf.json, *.csproj, app.spec, custom manifests… Same rule: first semver in the file is replaced."
-        required: false
-        default: ""
-        type: string
-      # ── build ────────────────────────────────────────────────────────────
-      setup-command:
-        description: "Runs after version-stamp, before build — codegen, extra deps, patches. Shell = `shell` input; sees $VERSION + $TAG."
-        required: false
-        default: ""
-        type: string
-      build-command:
-        description: "The release build. Shell = `shell` input; sees $VERSION + $TAG. OMIT for a notes-only release (no build/stamp/attach steps run — the workflow then augments release-please with title/notes/contributors only)."
-        required: false
-        default: ""
-        type: string
-      artifacts:
-        description: "Files/globs to attach to the Release, one per line — shippable binaries only. Missing files fail the run loudly. Empty = nothing attached (the artifacts must exist — produced by build-command/frontend, or already in the repo)."
-        required: false
-        default: ""
-        type: string
-      # ── release body ─────────────────────────────────────────────────────
+      # ── release body / metadata ──────────────────────────────────────────
       release-title:
         description: "Release title template — '{version}' and '{tag}' expand (e.g. 'MyApp {version}', '{tag} — stable'). Empty keeps release-please's title (or 'v{version}' on manual creates)."
         required: false
         default: ""
         type: string
       release-notes:
-        description: "Extra markdown appended to the Release body — after the changelog, before Contributors. For a fully custom body use post-publish-command + `gh release edit`."
+        description: "Extra markdown appended to the Release body — after the changelog, before Contributors. For a fully custom body, edit it yourself after this reusable (`gh release edit`)."
         required: false
         default: ""
         type: string
@@ -166,12 +90,7 @@ on:
         required: false
         default: false
         type: boolean
-      # ── hooks / release-please ───────────────────────────────────────────
-      post-publish-command:
-        description: "Runs after attach+contributors — publish a self-update pointer, bump a 'latest' file, notify. Shell = `shell` input; sees $VERSION + $TAG + env-json vars."
-        required: false
-        default: ""
-        type: string
+      # ── release-please ───────────────────────────────────────────────────
       release-please:
         description: "Run the embedded release-please job on branch pushes (opens/updates the Release PR). Set false if you drive release-please from your own workflow."
         required: false
@@ -191,9 +110,6 @@ on:
       token:
         description: "PAT — release-please pushes tags + `gh release edit`. Falls back to github.token."
         required: false
-      env-json:
-        description: "JSON object of env vars injected (masked) into every step — keeps per-project secrets out of the caller YAML."
-        required: false
 
 permissions:
   contents: write
@@ -212,82 +128,15 @@ jobs:
           manifest-file: ${{ inputs.rp-manifest-file }}
           token: ${{ secrets.token || github.token }}
 
-  # ── Job 2: tag push / manual dispatch → build + attach + publish ─────────
+  # ── Job 2: tag push / manual dispatch → Release body + metadata ──────────
   release:
     name: release
     if: ${{ github.ref_type == 'tag' || inputs.version != '' }}
     runs-on: ${{ inputs.runner }}
-    env:
-      # secrets can't sit in `if:` — map env-JSON here so steps can test
-      # `env.PROJ_ENV != ''` instead.
-      PROJ_ENV: ${{ secrets.env-json }}
-      # The "build phase" (toolchain → stamp → setup → build) only runs when
-      # there's something to build: an explicit build-command, or a frontend
-      # via node_workdir. A notes-only release skips it entirely.
-      HAS_BUILD: ${{ inputs.build-command != '' || inputs.node_workdir != '' }}
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0   # Contributors needs full history to flag first-timers
-
-      - name: Load project env
-        if: ${{ env.PROJ_ENV != '' }}
-        shell: bash
-        env:
-          PROJ_ENV_RAW: ${{ secrets.env-json }}
-        run: |
-          # Validate before parsing — a malformed env-json fails with a clear
-          # message instead of a bare `jq: parse error`.
-          if ! echo "$PROJ_ENV_RAW" | jq -e 'type == "object"' >/dev/null 2>&1; then
-            echo "::error::env-json secret is not a JSON object — expected {\"KEY\":\"val\",...}"
-            exit 1
-          fi
-          # Mask every value BEFORE injecting — env vars otherwise echo in the
-          # per-step "env:" dump. add-mask makes GitHub scrub them from logs.
-          echo "$PROJ_ENV_RAW" | jq -r '.[]' | while IFS= read -r v; do
-            while IFS= read -r line; do
-              [ -n "$line" ] && echo "::add-mask::$line"
-            done <<< "$v"
-          done
-          # Multiline values need the KEY<<DELIM heredoc form, not KEY=value —
-          # otherwise a value containing \n truncates. Non-string values
-          # (numbers/bools) serialize fine via @json-free %s.
-          echo "$PROJ_ENV_RAW" | jq -r 'to_entries[] | "\(.key)\u0000\(.value|tostring)\u0000"' |
-          while IFS= read -r -d '' k && IFS= read -r -d '' v; do
-            if [[ "$v" == *$'\n'* ]]; then
-              { echo "$k<<S1L_EOF_$k"; echo "$v"; echo "S1L_EOF_$k"; } >> "$GITHUB_ENV"
-            else
-              echo "$k=$v" >> "$GITHUB_ENV"
-            fi
-          done
-
-      # Say which pipeline tier this run is — and warn about inputs that will
-      # be ignored in it, so a misconfigured caller fails loudly-but-early.
-      - name: Release plan
-        shell: bash
-        env:
-          HAS_BUILD: ${{ inputs.build-command != '' || inputs.node_workdir != '' }}
-          ARTIFACTS: ${{ inputs.artifacts }}
-          TOOLCHAIN: ${{ inputs.toolchain }}
-          NODE_WORKDIR: ${{ inputs.node_workdir }}
-          SETUP_CMD: ${{ inputs.setup-command }}
-          VERSION_BUMP: ${{ inputs.version-bump }}
-          VERSION_FILES: ${{ inputs.version-files }}
-        run: |
-          if [ "$HAS_BUILD" = "true" ]; then
-            echo "release plan: build — toolchain=$TOOLCHAIN node_workdir=${NODE_WORKDIR:-none} then attach + notes + contributors"
-            [ -n "$ARTIFACTS" ] || echo "::notice::no artifacts declared — the Release will carry no binaries"
-            [ -n "$NODE_WORKDIR" ] && [ -z "$SETUP_CMD" ] && [ -z "$VERSION_FILES" ] && [ "$TOOLCHAIN" = "custom" ] && \
-              echo "::notice::frontend-only build (node_workdir) — no backend toolchain needed"
-          else
-            echo "release plan: notes-only — no build, no attach; title + notes + Contributors only"
-            [ -n "$ARTIFACTS" ] && echo "::warning::artifacts ignored — no build phase; attach needs built outputs"
-            [ -n "$TOOLCHAIN" ] && [ "$TOOLCHAIN" != "custom" ] && echo "::warning::toolchain '$TOOLCHAIN' ignored — no build phase"
-            [ -n "$SETUP_CMD" ] && echo "::warning::setup-command ignored — no build phase"
-            [ "$VERSION_BUMP" = "auto" ] && echo "::notice::version-bump skipped — nothing to stamp a version into"
-            [ -n "$VERSION_FILES" ] && echo "::warning::version-files ignored — no build phase"
-          fi
-          exit 0   # trailing `[ -n ... ]` tests return 1 on empty inputs
 
       # tag → version. v0.1.4→0.1.4, pkg-v0.1.4→0.1.4 (prefix "pkg-v"),
       # 0.1.4→0.1.4 (prefix ""). Manual dispatch synthesizes tag = prefix+ver.
@@ -314,163 +163,14 @@ jobs:
           { echo "VERSION=$v"; echo "TAG=$tag"; } >> "$GITHUB_ENV"
           echo "Releasing v$v (tag $tag)"
 
-      # Parse `toolchain` tokens `name[@ver]` → outputs `<name>-version` used by
-      # the setup actions below. Missing @ver → the preset's default.
-      - name: Parse toolchain
-        if: ${{ env.HAS_BUILD == 'true' }}
-        id: tc
-        shell: bash
-        env:
-          TOOLCHAIN: ${{ inputs.toolchain }}
-        run: |
-          declare -A def=( [rust]=stable [go]=stable [python]="3.x" [dotnet]="8.x" [bun]=latest [node]="lts/*" )
-          builtins="rust go python dotnet bun node custom"
-          for tok in $TOOLCHAIN; do
-            name="${tok%%@*}"
-            ver="${tok#*@}"; [ "$ver" = "$tok" ] && ver=""
-            [ -z "$ver" ] && ver="${def[$name]:-latest}"
-            if [[ " $builtins " != *" $name "* ]]; then
-              echo "::warning::toolchain token '$name' is not a built-in preset — nothing will install it. Use 'custom' + setup-command for exotic stacks."
-            fi
-            echo "${name}-version=${ver}" >> "$GITHUB_OUTPUT"
-          done
-
-      # ── Toolchain presets (built-ins only — `custom` provisions itself) ──
-      - name: Setup Rust
-        if: ${{ env.HAS_BUILD == 'true' && contains(inputs.toolchain, 'rust') }}
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ steps.tc.outputs['rust-version'] || 'stable' }}
-
-      - name: Rust cache
-        if: ${{ env.HAS_BUILD == 'true' && contains(inputs.toolchain, 'rust') }}
-        uses: Swatinem/rust-cache@v2
-
-      - name: Setup Go
-        if: ${{ env.HAS_BUILD == 'true' && contains(inputs.toolchain, 'go') }}
-        uses: actions/setup-go@v6
-        with:
-          go-version: ${{ steps.tc.outputs['go-version'] || 'stable' }}
-
-      - name: Setup Python
-        if: ${{ env.HAS_BUILD == 'true' && contains(inputs.toolchain, 'python') }}
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ steps.tc.outputs['python-version'] || '3.x' }}
-
-      - name: Setup .NET (C#/F#)
-        if: ${{ env.HAS_BUILD == 'true' && contains(inputs.toolchain, 'dotnet') }}
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: ${{ steps.tc.outputs['dotnet-version'] || '8.x' }}
-
-      - name: Setup Bun
-        if: ${{ env.HAS_BUILD == 'true' && contains(inputs.toolchain, 'bun') }}
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ steps.tc.outputs['bun-version'] || 'latest' }}
-
-      - name: Setup Node
-        if: ${{ env.HAS_BUILD == 'true' && (contains(inputs.toolchain, 'node') || inputs.node_workdir != '') }}
-        uses: actions/setup-node@v5
-        with:
-          node-version: ${{ steps.tc.outputs['node-version'] || 'lts/*' }}
-
-      # npm ci needs package-lock.json; fall back to npm install when absent.
-      - name: Build frontend
-        if: ${{ inputs.node_workdir != '' }}
-        working-directory: ${{ inputs.node_workdir }}
-        shell: bash
-        run: |
-          [ -f package.json ] || { echo "::error::node_workdir '${{ inputs.node_workdir }}' has no package.json"; exit 1; }
-          if [ -f package-lock.json ]; then npm ci; else npm install; fi
-          npm run build
-
-      # Stamp $VERSION into the toolchain's canonical manifest (root only,
-      # predictable) + any `version-files`. First semver in the file is
-      # replaced — surrounding quotes/tags are preserved, so it works for
-      # TOML/JSON/XML/INI alike. `none` or a stack we don't know → caller
-      # handles it in setup-command.
-      - name: Stamp version
-        if: ${{ env.HAS_BUILD == 'true' && inputs.version-bump == 'auto' }}
-        shell: bash
-        env:
-          TOOLCHAIN: ${{ inputs.toolchain }}
-          NODE_WORKDIR: ${{ inputs.node_workdir }}
-          VERSION_FILES: ${{ inputs.version-files }}
-        run: |
-          stamp() {
-            local f="$1"
-            if [ -f "$f" ]; then
-              sed -i -E "0,/[0-9]+\.[0-9]+\.[0-9]+/s//$VERSION/" "$f"
-              echo "stamped $f → $VERSION"
-            else
-              echo "::warning::version-file not found, skipped: $f"
-            fi
-          }
-          for tok in $TOOLCHAIN; do
-            case "${tok%%@*}" in
-              rust)
-                # A root Cargo.toml that is a [workspace] isn't the package —
-                # the real manifest lives in a member dir. Skip it; the caller
-                # lists the member Cargo.toml in version-files.
-                if [ -f Cargo.toml ] && grep -q '^\[workspace\]' Cargo.toml; then
-                  echo "root Cargo.toml is a workspace — list the member manifest in version-files"
-                else
-                  stamp Cargo.toml
-                fi ;;
-              node|bun) stamp package.json ;;
-              python) stamp pyproject.toml ;;
-              # go has no version file; dotnet uses .csproj → version-files
-            esac
-          done
-          [ -n "$NODE_WORKDIR" ] && stamp "$NODE_WORKDIR/package.json"
-          while IFS= read -r f; do
-            f="$(echo "$f" | tr -d '\r' | xargs)"
-            [ -n "$f" ] && stamp "$f" || true
-          done <<< "$VERSION_FILES"
-          exit 0   # a trailing `[ -n ... ]` on an empty VERSION_FILES exits 1
-
-      # `shell:` on a step can't take an expression — the input is resolved by
-      # routing: bash runs the hook inline; any other shell wraps it as
-      # `<shell> -Command '<body>'`. pwsh/powershell get -NoProfile.
-      # Everything from here to Attach only runs when build-command is set —
-      # a notes-only release skips toolchain/stamp/build/attach entirely.
-      - name: Setup (pre-build hook)
-        if: ${{ env.HAS_BUILD == 'true' && inputs.setup-command != '' }}
-        shell: bash
-        env:
-          HOOK: ${{ inputs.setup-command }}
-          HOOK_SHELL: ${{ inputs.shell }}
-        run: |
-          if [ "$HOOK_SHELL" = "bash" ] || [ "$HOOK_SHELL" = "sh" ]; then
-            eval "$HOOK"
-          else
-            "$HOOK_SHELL" -NoProfile -Command "$HOOK"
-          fi
-
-      - name: Build
-        if: ${{ inputs.build-command != '' }}
-        shell: bash
-        env:
-          HOOK: ${{ inputs.build-command }}
-          HOOK_SHELL: ${{ inputs.shell }}
-        run: |
-          if [ "$HOOK_SHELL" = "bash" ] || [ "$HOOK_SHELL" = "sh" ]; then
-            eval "$HOOK"
-          else
-            "$HOOK_SHELL" -NoProfile -Command "$HOOK"
-          fi
-
-      # release-please already created the Release with the changelog body —
-      # attach binaries to it. Manual runs: create it if missing. This step
-      # ALWAYS runs — even a notes-only release needs the Release created,
-      # titled and flagged; the upload loop is skipped when artifacts is empty.
-      - name: Attach artifacts to GitHub Release
+      # release-please normally already created the Release — this job then
+      # only edits title/flags/body. Manual runs (or a race with a sibling
+      # build job): create it if missing. `gh release create` on an existing
+      # release fails — retry the view, that's the race winner having landed.
+      - name: Ensure Release + title + flags
         env:
           GH_TOKEN: ${{ secrets.token || github.token }}
           REPO: ${{ github.repository }}
-          ARTIFACTS: ${{ inputs.artifacts }}
           RELEASE_TITLE: ${{ inputs.release-title }}
           PRERELEASE_IN: ${{ inputs.prerelease }}
           DRAFT_IN: ${{ inputs.draft }}
@@ -491,41 +191,22 @@ jobs:
 
           if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
             echo "no existing release for $TAG — creating one (plain notes)"
-            gh release create "$TAG" --repo "$REPO" --title "$title" --notes "Release $VER" "${flags[@]}" || { echo "::error::gh release create failed"; exit 1; }
-            sleep 3   # let the API settle before upload
-          else
-            if $is_pre || [ "$DRAFT_IN" = "true" ]; then
-              gh release edit "$TAG" --repo "$REPO" "${flags[@]}" || true
-            fi
-            # Apply a caller-supplied title onto an existing release too.
-            [ -n "$RELEASE_TITLE" ] && gh release edit "$TAG" --repo "$REPO" --title "$title"
+            gh release create "$TAG" --repo "$REPO" --title "$title" --notes "Release $VER" "${flags[@]}" || true
+            # A concurrent job may have won the create — either way it must exist now.
+            for i in 1 2 3 4 5; do
+              gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1 && break
+              sleep 3
+            done
+            gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1 \
+              || { echo "::error::release $TAG still missing after create"; exit 1; }
           fi
 
-          # `gh release upload` glob-mangles path args on Windows — upload the
-          # BASENAME from inside the file's dir, the only form it can't break.
-          # Artifacts must resolve INSIDE the workspace — absolute paths or
-          # `..` escapes could exfiltrate runner files onto a public Release.
-          ws="$(pwd -P)"
-          rc=0
-          while IFS= read -r pat; do
-            pat="$(echo "$pat" | tr -d '\r' | xargs)"
-            [ -z "$pat" ] && continue
-            matched=0
-            for f in $pat; do   # intentional unquoted glob expansion
-              [ -e "$f" ] || continue
-              real="$(cd "$(dirname "$f")" 2>/dev/null && pwd -P)/$(basename "$f")"
-              case "$real" in
-                "$ws"/*) ;;   # inside workspace — ok
-                *) echo "::error::artifact escapes the workspace, refused: $pat"; rc=1; continue ;;
-              esac
-              matched=1
-              if ! (cd "$(dirname "$f")" && gh release upload "$TAG" "$(basename "$f")" --clobber --repo "$REPO"); then
-                echo "::error::gh release upload failed for $f"; rc=1
-              fi
-            done
-            [ "$matched" = 0 ] && { echo "::error::artifact not found: $pat"; rc=1; }
-          done <<< "$ARTIFACTS"
-          exit $rc
+          # Apply flags + a caller-supplied title onto an existing release too.
+          if $is_pre || [ "$DRAFT_IN" = "true" ]; then
+            gh release edit "$TAG" --repo "$REPO" "${flags[@]}" || true
+          fi
+          [ -n "$RELEASE_TITLE" ] && gh release edit "$TAG" --repo "$REPO" --title "$title"
+          exit 0
 
       - name: Append release notes
         if: ${{ inputs.release-notes != '' }}
@@ -583,18 +264,4 @@ jobs:
             printf '\n\n### Contributors\n\n%s' "$section" >> /tmp/body.md
             gh release edit "$TAG" --repo "$REPO" --notes-file /tmp/body.md
             echo "appended Contributors to $TAG"
-          fi
-
-      - name: Post-publish
-        if: ${{ inputs.post-publish-command != '' }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.token || github.token }}
-          HOOK: ${{ inputs.post-publish-command }}
-          HOOK_SHELL: ${{ inputs.shell }}
-        run: |
-          if [ "$HOOK_SHELL" = "bash" ] || [ "$HOOK_SHELL" = "sh" ]; then
-            eval "$HOOK"
-          else
-            "$HOOK_SHELL" -NoProfile -Command "$HOOK"
           fi
