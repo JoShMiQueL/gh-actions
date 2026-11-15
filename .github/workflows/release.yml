@@ -287,6 +287,7 @@ jobs:
             [ "$VERSION_BUMP" = "auto" ] && echo "::notice::version-bump skipped — nothing to stamp a version into"
             [ -n "$VERSION_FILES" ] && echo "::warning::version-files ignored — no build phase"
           fi
+          exit 0   # trailing `[ -n ... ]` tests return 1 on empty inputs
 
       # tag → version. v0.1.4→0.1.4, pkg-v0.1.4→0.1.4 (prefix "pkg-v"),
       # 0.1.4→0.1.4 (prefix ""). Manual dispatch synthesizes tag = prefix+ver.
