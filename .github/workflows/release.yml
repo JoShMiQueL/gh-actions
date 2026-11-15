@@ -131,12 +131,14 @@ on:
         default: ""
         type: string
       build-command:
-        description: "The release build. Shell = `shell` input; sees $VERSION + $TAG."
-        required: true
+        description: "The release build. Shell = `shell` input; sees $VERSION + $TAG. OMIT for a notes-only release (no build/stamp/attach steps run — the workflow then augments release-please with title/notes/contributors only)."
+        required: false
+        default: ""
         type: string
       artifacts:
-        description: "Files/globs to attach to the Release, one per line — shippable binaries only. Missing files fail the run loudly."
-        required: true
+        description: "Files/globs to attach to the Release, one per line — shippable binaries only. Missing files fail the run loudly. Empty = nothing attached (the artifacts must exist — produced by build-command/frontend, or already in the repo)."
+        required: false
+        default: ""
         type: string
       # ── release body ─────────────────────────────────────────────────────
       release-title:
@@ -219,6 +221,10 @@ jobs:
       # secrets can't sit in `if:` — map env-JSON here so steps can test
       # `env.PROJ_ENV != ''` instead.
       PROJ_ENV: ${{ secrets.env-json }}
+      # The "build phase" (toolchain → stamp → setup → build) only runs when
+      # there's something to build: an explicit build-command, or a frontend
+      # via node_workdir. A notes-only release skips it entirely.
+      HAS_BUILD: ${{ inputs.build-command != '' || inputs.node_workdir != '' }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -255,6 +261,33 @@ jobs:
             fi
           done
 
+      # Say which pipeline tier this run is — and warn about inputs that will
+      # be ignored in it, so a misconfigured caller fails loudly-but-early.
+      - name: Release plan
+        shell: bash
+        env:
+          HAS_BUILD: ${{ inputs.build-command != '' || inputs.node_workdir != '' }}
+          ARTIFACTS: ${{ inputs.artifacts }}
+          TOOLCHAIN: ${{ inputs.toolchain }}
+          NODE_WORKDIR: ${{ inputs.node_workdir }}
+          SETUP_CMD: ${{ inputs.setup-command }}
+          VERSION_BUMP: ${{ inputs.version-bump }}
+          VERSION_FILES: ${{ inputs.version-files }}
+        run: |
+          if [ "$HAS_BUILD" = "true" ]; then
+            echo "release plan: build — toolchain=$TOOLCHAIN node_workdir=${NODE_WORKDIR:-none} then attach + notes + contributors"
+            [ -n "$ARTIFACTS" ] || echo "::notice::no artifacts declared — the Release will carry no binaries"
+            [ -n "$NODE_WORKDIR" ] && [ -z "$SETUP_CMD" ] && [ -z "$VERSION_FILES" ] && [ "$TOOLCHAIN" = "custom" ] && \
+              echo "::notice::frontend-only build (node_workdir) — no backend toolchain needed"
+          else
+            echo "release plan: notes-only — no build, no attach; title + notes + Contributors only"
+            [ -n "$ARTIFACTS" ] && echo "::warning::artifacts ignored — no build phase; attach needs built outputs"
+            [ -n "$TOOLCHAIN" ] && [ "$TOOLCHAIN" != "custom" ] && echo "::warning::toolchain '$TOOLCHAIN' ignored — no build phase"
+            [ -n "$SETUP_CMD" ] && echo "::warning::setup-command ignored — no build phase"
+            [ "$VERSION_BUMP" = "auto" ] && echo "::notice::version-bump skipped — nothing to stamp a version into"
+            [ -n "$VERSION_FILES" ] && echo "::warning::version-files ignored — no build phase"
+          fi
+
       # tag → version. v0.1.4→0.1.4, pkg-v0.1.4→0.1.4 (prefix "pkg-v"),
       # 0.1.4→0.1.4 (prefix ""). Manual dispatch synthesizes tag = prefix+ver.
       - name: Resolve tag + version
@@ -283,6 +316,7 @@ jobs:
       # Parse `toolchain` tokens `name[@ver]` → outputs `<name>-version` used by
       # the setup actions below. Missing @ver → the preset's default.
       - name: Parse toolchain
+        if: ${{ env.HAS_BUILD == 'true' }}
         id: tc
         shell: bash
         env:
@@ -302,41 +336,41 @@ jobs:
 
       # ── Toolchain presets (built-ins only — `custom` provisions itself) ──
       - name: Setup Rust
-        if: ${{ contains(inputs.toolchain, 'rust') }}
+        if: ${{ env.HAS_BUILD == 'true' && contains(inputs.toolchain, 'rust') }}
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ steps.tc.outputs['rust-version'] || 'stable' }}
 
       - name: Rust cache
-        if: ${{ contains(inputs.toolchain, 'rust') }}
+        if: ${{ env.HAS_BUILD == 'true' && contains(inputs.toolchain, 'rust') }}
         uses: Swatinem/rust-cache@v2
 
       - name: Setup Go
-        if: ${{ contains(inputs.toolchain, 'go') }}
+        if: ${{ env.HAS_BUILD == 'true' && contains(inputs.toolchain, 'go') }}
         uses: actions/setup-go@v6
         with:
           go-version: ${{ steps.tc.outputs['go-version'] || 'stable' }}
 
       - name: Setup Python
-        if: ${{ contains(inputs.toolchain, 'python') }}
+        if: ${{ env.HAS_BUILD == 'true' && contains(inputs.toolchain, 'python') }}
         uses: actions/setup-python@v6
         with:
           python-version: ${{ steps.tc.outputs['python-version'] || '3.x' }}
 
       - name: Setup .NET (C#/F#)
-        if: ${{ contains(inputs.toolchain, 'dotnet') }}
+        if: ${{ env.HAS_BUILD == 'true' && contains(inputs.toolchain, 'dotnet') }}
         uses: actions/setup-dotnet@v5
         with:
           dotnet-version: ${{ steps.tc.outputs['dotnet-version'] || '8.x' }}
 
       - name: Setup Bun
-        if: ${{ contains(inputs.toolchain, 'bun') }}
+        if: ${{ env.HAS_BUILD == 'true' && contains(inputs.toolchain, 'bun') }}
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ steps.tc.outputs['bun-version'] || 'latest' }}
 
       - name: Setup Node
-        if: ${{ contains(inputs.toolchain, 'node') || inputs.node_workdir != '' }}
+        if: ${{ env.HAS_BUILD == 'true' && (contains(inputs.toolchain, 'node') || inputs.node_workdir != '') }}
         uses: actions/setup-node@v5
         with:
           node-version: ${{ steps.tc.outputs['node-version'] || 'lts/*' }}
@@ -357,7 +391,7 @@ jobs:
       # TOML/JSON/XML/INI alike. `none` or a stack we don't know → caller
       # handles it in setup-command.
       - name: Stamp version
-        if: ${{ inputs.version-bump == 'auto' }}
+        if: ${{ env.HAS_BUILD == 'true' && inputs.version-bump == 'auto' }}
         shell: bash
         env:
           TOOLCHAIN: ${{ inputs.toolchain }}
@@ -399,8 +433,10 @@ jobs:
       # `shell:` on a step can't take an expression — the input is resolved by
       # routing: bash runs the hook inline; any other shell wraps it as
       # `<shell> -Command '<body>'`. pwsh/powershell get -NoProfile.
+      # Everything from here to Attach only runs when build-command is set —
+      # a notes-only release skips toolchain/stamp/build/attach entirely.
       - name: Setup (pre-build hook)
-        if: ${{ inputs.setup-command != '' }}
+        if: ${{ env.HAS_BUILD == 'true' && inputs.setup-command != '' }}
         shell: bash
         env:
           HOOK: ${{ inputs.setup-command }}
@@ -413,6 +449,7 @@ jobs:
           fi
 
       - name: Build
+        if: ${{ inputs.build-command != '' }}
         shell: bash
         env:
           HOOK: ${{ inputs.build-command }}
@@ -425,7 +462,9 @@ jobs:
           fi
 
       # release-please already created the Release with the changelog body —
-      # attach binaries to it. Manual runs: create it if missing.
+      # attach binaries to it. Manual runs: create it if missing. This step
+      # ALWAYS runs — even a notes-only release needs the Release created,
+      # titled and flagged; the upload loop is skipped when artifacts is empty.
       - name: Attach artifacts to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.token || github.token }}
