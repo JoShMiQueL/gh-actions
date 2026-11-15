@@ -50,12 +50,17 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          # git push needs the PAT — GITHUB_TOKEN's auth header only covers
+          # API calls, not git writes. persist-credentials lets the fetch
+          # work; the push below rewrites the remote with the PAT anyway.
+          token: ${{ secrets.token || github.token }}
       - name: Move major tag to the newest release tag
         env:
           GH_TOKEN: ${{ secrets.token || github.token }}
           REPO: ${{ github.repository }}
         shell: bash
         run: |
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
           git fetch --tags -f -q
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             tag="$GITHUB_REF_NAME"
