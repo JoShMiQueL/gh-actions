@@ -1,0 +1,259 @@
+name: Release (reusable)
+
+# ============================================================================
+#  One reusable "tag → release" pipeline for every project. A tag (from
+#  release-please merging its Release PR, or a manual `git tag vX.Y.Z`) runs:
+#
+#      checkout → load env-JSON → resolve version → setup toolchain →
+#      [version stamp] → [frontend build] → build → attach binaries →
+#      append "### Contributors" to the Release body → [post-publish hook]
+#
+#  The CHANGELOG.md in the repo stays clean — release-please owns it and it
+#  holds ONLY categorized changes (Features/Fixes). Contributors live in the
+#  Release body (the GitHub page), never in the file — the clap model.
+#
+#  ── Minimal caller (any project) ──────────────────────────────────────────
+#    on:
+#      push: { tags: ["v*.*.*"] }
+#      workflow_dispatch: { inputs: { version: { required: true } } }
+#    permissions: { contents: write }
+#    jobs:
+#      release:
+#        uses: JoShMiQueL/gh-actions/.github/workflows/release.yml@main
+#        secrets:
+#          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}   # for `gh release edit`
+#          env:   ${{ secrets.PROJECT_RELEASE_ENV }}    # JSON {"KEY":"val",...}
+#        with:
+#          language: rust
+#          build-command: cargo build --release -p myapp
+#          artifacts: target/release/myapp.exe
+#
+#  ── Hooks (all optional, all pwsh, all see $env:VERSION + $env:TAG) ────────
+#    setup-command        runs pre-build — e.g. stamp $env:VERSION into
+#                         Cargo.toml / package.json / AssemblyInfo.cs.
+#    post-publish-command runs after attach — e.g. publish a self-update
+#                         pointer to R2/S3, bump a "latest" file, notify.
+#
+#  ── Secrets ───────────────────────────────────────────────────────────────
+#    token   PAT used for `gh release edit` (contributors body). Falls back to
+#            github.token when unset — enough for same-repo edits.
+#    env     One JSON object carrying the project's whole env — keeps secrets
+#            out of the caller YAML. `{"S1L_R2_BUCKET":"x","API_KEY":"y"}` is
+#            injected into every step via `Load project env`.
+#
+#  ── Per-input reference ───────────────────────────────────────────────────
+#    version           manual-dispatch version (ignored on tag push)
+#    tag-prefix        strip this from the tag → version ("v" default; "" for
+#                      bare `0.1.4`; "pkg-v" for monorepo `pkg-v0.1.4`)
+#    runner            windows-latest | ubuntu-latest | macos-latest
+#    language          rust (toolchain+cache) | node | go | custom (none preset)
+#    node_version      node for the frontend step (default 24)
+#    node_workdir      dir with package-lock.json → runs `npm ci && npm run
+#                      build` there; empty = skip frontend
+#    artifacts         newline/space-separated file paths or globs attached to
+#                      the Release — the shippable binaries only (not dev CLIs)
+#    contributors      bool — append the Contributors section (default true)
+# ============================================================================
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Release version (manual dispatch only; ignored on tag push)."
+        required: false
+        type: string
+      tag-prefix:
+        description: "Tag prefix stripped to get the version — 'v'→v0.1.4→0.1.4, ''→0.1.4→0.1.4, 'pkg-v'→pkg-v0.1.4→0.1.4."
+        required: false
+        default: "v"
+        type: string
+      runner:
+        description: "Runner OS label."
+        required: false
+        default: windows-latest
+        type: string
+      language:
+        description: "rust | node | go | custom — picks the toolchain preset (custom = none; drive it all via setup/build-command)."
+        required: false
+        default: custom
+        type: string
+      node_version:
+        description: "Node version for the frontend step (when node_workdir set)."
+        required: false
+        default: "24"
+        type: string
+      node_workdir:
+        description: "Dir with package-lock.json — `npm ci` + `npm run build` run here; empty skips the frontend."
+        required: false
+        default: ""
+        type: string
+      setup-command:
+        description: "pwsh run before build (version stamp, codegen). $env:VERSION + $env:TAG set."
+        required: false
+        default: ""
+        type: string
+      build-command:
+        description: "pwsh build command — the release build."
+        required: true
+        type: string
+      artifacts:
+        description: "Newline/space-separated file paths or globs attached to the Release — shippable binaries only."
+        required: true
+        type: string
+      contributors:
+        description: "Append `### Contributors` (range authors, first-timers flagged) to the Release body."
+        required: false
+        default: true
+        type: boolean
+      post-publish-command:
+        description: "pwsh run after attach (publish self-update pointer, notify). $env:VERSION/$env:TAG set; env-JSON loaded."
+        required: false
+        default: ""
+        type: string
+    secrets:
+      token:
+        description: "PAT for `gh release edit` — falls back to github.token if unset."
+        required: false
+      env:
+        description: "JSON object of env vars injected into every step — keeps per-project secrets out of the caller YAML."
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: resolve → build → attach → contributors → post-publish
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0   # contributors needs full history to flag first-timers
+
+      # Inject the project's env-JSON so every later step sees it.
+      - name: Load project env
+        if: ${{ secrets.env != '' }}
+        shell: pwsh
+        env:
+          ENV_JSON: ${{ secrets.env }}
+        run: |
+          ($env:ENV_JSON | ConvertFrom-Json).PSObject.Properties | ForEach-Object {
+            "$($_.Name)=$($_.Value)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          }
+
+      # tag → version. `v0.1.4`→0.1.4, `pkg-v0.1.4`→0.1.4 (prefix "pkg-v"),
+      # `0.1.4`→0.1.4 (prefix ""). Manual dispatch synthesizes tag = prefix+ver.
+      - name: Resolve tag + version
+        id: ver
+        shell: pwsh
+        run: |
+          $prefix = "${{ inputs.tag-prefix }}"
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $tag = "${{ github.ref_name }}"
+            $v = $tag
+            if ($prefix -and $tag.StartsWith($prefix)) { $v = $tag.Substring($prefix.Length) }
+          } else {
+            $v = "${{ inputs.version }}"
+            $tag = "$prefix$v"
+          }
+          "version=$v" | Out-File $env:GITHUB_OUTPUT -Append
+          "tag=$tag"     | Out-File $env:GITHUB_OUTPUT -Append
+          "VERSION=$v"   | Out-File $env:GITHUB_ENV -Append
+          "TAG=$tag"     | Out-File $env:GITHUB_ENV -Append
+          Write-Output "Releasing v$v (tag $tag)"
+
+      - name: Setup Rust
+        if: ${{ inputs.language == 'rust' }}
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        if: ${{ inputs.language == 'rust' }}
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node
+        if: ${{ inputs.node_workdir != '' || inputs.language == 'node' }}
+        uses: actions/setup-node@v5
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.node_workdir }}/package-lock.json
+
+      - name: Build frontend (npm ci + build)
+        if: ${{ inputs.node_workdir != '' }}
+        working-directory: ${{ inputs.node_workdir }}
+        run: |
+          npm ci
+          npm run build
+
+      - name: Version stamp / pre-build
+        if: ${{ inputs.setup-command != '' }}
+        shell: pwsh
+        run: |
+          ${{ inputs.setup-command }}
+
+      - name: Build
+        shell: pwsh
+        run: |
+          ${{ inputs.build-command }}
+
+      # release-please already created the Release with the changelog body —
+      # attach binaries to it. Manual runs: create it if missing.
+      - name: Attach artifacts to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.token || github.token }}
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.ver.outputs.tag }}"
+          $files = "${{ inputs.artifacts }}" -split "[`n ]" | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag @files --clobber
+          } else {
+            Write-Output "no existing release for $tag — creating with auto notes"
+            gh release create $tag --title "v${{ steps.ver.outputs.version }}" --generate-notes @files
+          }
+          exit $LASTEXITCODE
+
+      # Contributors live in the Release body (the page), never in CHANGELOG.md.
+      # Range = prev_tag..this_tag; an author is "(new contributor)" if they
+      # never committed before the previous tag. Reads `git log %an` — works on
+      # direct commits, no PRs needed.
+      - name: Append Contributors section to Release body
+        if: ${{ inputs.contributors }}
+        env:
+          GH_TOKEN: ${{ secrets.token || github.token }}
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.ver.outputs.tag }}"
+          $prev = git describe --tags --abbrev=0 "$tag^" 2>$null
+          $range = if ($prev) { "$prev..$tag" } else { $tag }
+          Write-Output "contributor range: $range (prev: $($prev -or 'none'))"
+
+          $rangeAuthors = git log $range --format='%an' 2>$null | Where-Object { $_ } | Sort-Object -Unique
+          if (-not $rangeAuthors) { Write-Output "no authors in range"; exit 0 }
+
+          $priorAuthors = @()
+          if ($prev) { $priorAuthors = git log "$prev" --format='%an' 2>$null | Sort-Object -Unique }
+
+          $section = "`n`n### Contributors`n`n"
+          foreach ($a in $rangeAuthors) {
+            $isNew = $prev -and ($priorAuthors -notcontains $a)
+            $badge = if ($isNew) { " *(new contributor)*" } else { "" }
+            $section += "- $a$badge`n"
+          }
+          $section = $section.TrimEnd()
+
+          $bodyFile = New-TemporaryFile
+          gh release view $tag --repo ${{ github.repository }} --json body --jq .body | Out-File $bodyFile -Encoding utf8
+          Add-Content $bodyFile "`n$section`n"
+          gh release edit $tag --repo ${{ github.repository }} --notes-file $bodyFile
+          Remove-Item $bodyFile -ErrorAction SilentlyContinue
+          Write-Output "appended Contributors to $tag"
+
+      - name: Post-publish
+        if: ${{ inputs.post-publish-command != '' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.token || github.token }}
+        run: |
+          ${{ inputs.post-publish-command }}

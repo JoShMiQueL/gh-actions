@@ -1,42 +1,36 @@
-# gh-actions — reusable release pipelines
+# gh-actions — one reusable release pipeline
 
-Personal toolkit of reusable GitHub workflows + actions. Each project calls
-them with a thin caller — no per-project pipeline rewriting.
+A single reusable workflow, `release.yml`, that runs the whole "tag → release"
+pipeline for any project. release-please is used **directly** (it's the
+official action — no wrapper needed); this toolkit adds what release-please
+doesn't: build + attach binaries + a Contributors section in the Release body.
 
 ## The model (clap / industry standard)
 
 | Artifact | Content |
 |---|---|
-| **`CHANGELOG.md`** (repo file) | **Changes only** — `### Features`/`### Bug Fixes`, categorized. Owned by release-please. No contributors. |
-| **Release body** (the GitHub page) | **Everything** — changelog + `### Contributors` (authors of the range, `(new contributor)` for first-timers). |
+| **`CHANGELOG.md`** (repo file) | **Changes only** — `### Features`/`### Bug Fixes`. Owned by release-please. |
+| **Release body** (the GitHub page) | **Everything** — the changelog + `### Contributors` (authors of the range, `(new contributor)` for first-timers). Added by this pipeline. |
 
-The CHANGELOG is the product's history; the Release is the social event —
-contributors live in the body, never in the file.
+## What a project needs (2 files, ~40 lines total)
 
-## Pieces
-
-| Path | Kind | What it does |
-|---|---|---|
-| `.github/workflows/release-please.yml` | reusable | wraps `release-please-action` → opens/maintains the Release PR (changelog = clean changes) |
-| `.github/workflows/release-publish.yml` | reusable | tag → resolve version → stamp → build → attach binaries → **`### Contributors` appended to the Release body** → post-publish hook |
-| `.github/actions/contributors/action.yml` | composite | standalone: appends the Contributors section to a Release body |
-
-## Use in a project
-
-**1. `release-please.yml`** — put `release-please-config.json` +
-`.release-please-manifest.json` in the project root, then:
+**1. `release-please.yml`** — official action, direct:
 
 ```yaml
 on: { push: { branches: [main] } }
 permissions: { contents: write, pull-requests: write }
 jobs:
   rp:
-    uses: JoShMiQueL/gh-actions/.github/workflows/release-please.yml@main
-    secrets:
-      token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
 ```
 
-**2. `release-publish.yml`** — thin caller with the project's build recipe:
+**2. `release.yml`** — thin caller, all project-specific bits as inputs:
 
 ```yaml
 on:
@@ -45,8 +39,8 @@ on:
     inputs: { version: { required: true } }
 permissions: { contents: write }
 jobs:
-  publish:
-    uses: JoShMiQueL/gh-actions/.github/workflows/release-publish.yml@main
+  release:
+    uses: JoShMiQueL/gh-actions/.github/workflows/release.yml@main
     secrets:
       token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
       env:   ${{ secrets.PROJECT_RELEASE_ENV }}   # JSON {"KEY":"val",...}
@@ -54,26 +48,39 @@ jobs:
       version: ${{ inputs.version }}
       language: rust
       node_workdir: launcher/ui
+      setup-command: |
+        (Get-Content launcher/src-tauri/Cargo.toml -Raw) -replace '(?m)^version\s*=\s*"[^"]*"', "version = `"${{ env.VERSION }}`"" | Set-Content launcher/src-tauri/Cargo.toml -NoNewline
       build-command: cargo build --release -p s1l -p s1l-launcher
       artifacts: target/release/s1l-launcher.exe
       post-publish-command: ./target/release/s1l.exe pack launcher ...
 ```
 
-## The `env` secret
+## Inputs (all documented in `release.yml`'s header comment)
 
-Per-project secrets as **one JSON object** — keeps the caller clean, one secret
-to rotate:
+| Input | Default | What it controls |
+|---|---|---|
+| `version` | — | manual-dispatch version (ignored on tag push) |
+| `tag-prefix` | `"v"` | strip this from the tag → version (`""`, `"pkg-v"`, …) |
+| `runner` | `windows-latest` | OS for the build |
+| `language` | `custom` | `rust` (toolchain+cache) \| `node` \| `go` \| `custom` |
+| `node_version` | `24` | node for the frontend step |
+| `node_workdir` | `""` | dir with `package-lock.json` → `npm ci`+`npm run build`; empty skips it |
+| `setup-command` | `""` | pwsh pre-build (version stamp, codegen) — `$env:VERSION`/`$env:TAG` set |
+| `build-command` | — | **required** — the release build |
+| `artifacts` | — | **required** — paths/globs attached to the Release |
+| `contributors` | `true` | append the Contributors section to the body |
+| `post-publish-command` | `""` | pwsh after attach (self-update pointer, notify) |
 
-```
-PROJECT_RELEASE_ENV = {"S1L_PACK_SEED":"44f4…","S1L_R2_BUCKET":"s1l-store",...}
-```
+## Secrets
 
-Loaded into every step via `Load project env`. Set it as a repo secret in each
-project.
+| Secret | Needed for |
+|---|---|
+| `token` | `gh release edit` (contributors) — a PAT; falls back to `github.token` |
+| `env` | One JSON object = the project's whole env, injected into every step (`{"KEY":"val",...}`) — keeps secrets out of the YAML |
 
-## Contributors logic
+## Why not more pieces?
 
-Commit authors of the release range (`prev_tag..this_tag`), deduped. An author
-is flagged `*(new contributor)*` if they never committed before the previous
-tag. Works on direct commits (no PRs needed) — reads `git log --format=%an`,
-not GitHub's contributor graph (which only fills for PRs).
+release-please is already a maintained action — a wrapper would add nothing.
+Contributors isn't worth a separate action — it's a step inside `release.yml`
+(the only place it's ever wanted). So: **one reusable workflow**, used
+everywhere, with every knob documented in its header.
