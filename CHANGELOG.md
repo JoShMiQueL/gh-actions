@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.2.0](https://github.com/JoShMiQueL/gh-actions/compare/v1.1.2...v1.2.0) (2026-11-17)
+
+
+### Features
+
+* **release:** Contributors linkean a [@login](https://github.com/login) en vez de nombre plano ([5413ae7](https://github.com/JoShMiQueL/gh-actions/commit/5413ae724ef523dc59b9d3453a0767f22902ce16))
+
+
+### Bug Fixes
+
+* **release:** Contributors usan [@login](https://github.com/login) nativo — [[@l](https://github.com/l)](url) no hace mention ([d72f68c](https://github.com/JoShMiQueL/gh-actions/commit/d72f68ca183b7a5959f0af6957fe9d03f816b05b))
+* **release:** normaliza '](url)(date)' -&gt; '](url) (date)' en el body ([b8cbb05](https://github.com/JoShMiQueL/gh-actions/commit/b8cbb05c32dda0e9bb7286c1ad3523a52b51b483))
+* **version.yml:** read secrets.RELEASE_PLEASE_TOKEN in the caller — secrets.token is only the reusable's alias (GH_TOKEN was empty, gh api 401s) ([0d04da7](https://github.com/JoShMiQueL/gh-actions/commit/0d04da759609e92622fa5b67fc8c621522dcb518))
+
 ## [1.1.2](https://github.com/JoShMiQueL/gh-actions/compare/v1.1.1...v1.1.2) (2026-11-15)
 
 
