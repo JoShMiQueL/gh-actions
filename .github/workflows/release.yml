@@ -209,6 +209,20 @@ jobs:
           [ -n "$RELEASE_TITLE" ] && gh release edit "$TAG" --repo "$REPO" --title "$title"
           exit 0
 
+      # release-please's Release body drops the space the CHANGELOG keeps:
+      # "## [0.1.1](…/compare/…)(2026-11-17)" vs the file's ") (…". Normalize
+      # it to ") (date)" — idempotent, only touches the version header line.
+      - name: Normalize version-header spacing
+        env:
+          GH_TOKEN: ${{ secrets.token || github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          gh release view "$TAG" --repo "$REPO" --json body --jq .body > /tmp/body.md
+          sed -i -E 's/(\]\([^)]+\))\(([0-9]{4}-[0-9]{2}-[0-9]{2})\)/\1 (\2)/' /tmp/body.md
+          gh release edit "$TAG" --repo "$REPO" --notes-file /tmp/body.md
+          exit 0
+
       - name: Append release notes
         if: ${{ inputs.release-notes != '' }}
         env:
