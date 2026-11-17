@@ -268,7 +268,10 @@ jobs:
               badge=" *(new contributor)*"
             fi
             if [ -n "$login" ]; then
-              section+="- [@$login](https://github.com/$login)$badge"$'\n'
+              # bare @login → GitHub renders the avatar + hovercard (a real
+              # mention), not just a styled link. []() would look the same
+              # but lose the mention.
+              section+="- @$login$badge"$'\n'
             else
               section+="- $a$badge"$'\n'
             fi
