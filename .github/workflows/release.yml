@@ -243,19 +243,35 @@ jobs:
           if [ -n "$prev" ]; then range="$prev..$TAG"; else range="$TAG"; fi
           echo "contributor range: $range (prev: ${prev:-none})"
 
-          mapfile -t authors < <(git log "$range" --format='%an' 2>/dev/null | sort -u | grep -v '^$')
-          [ ${#authors[@]} -eq 0 ] && { echo "no authors in range"; exit 0; }
+          # Resolve each author to their GitHub login via commit email so the
+          # section links (@[login](…)) instead of a bare display name. Email
+          # → login goes through the search API; on any miss we keep the name.
+          mapfile -t lines < <(git log "$range" --format='%an|%ae' 2>/dev/null | sort -u | grep -v '^$')
+          [ ${#lines[@]} -eq 0 ] && { echo "no authors in range"; exit 0; }
 
           prior=""
           [ -n "$prev" ] && prior="$(git log "$prev" --format='%an' | sort -u)"
 
           section=""
-          for a in "${authors[@]}"; do
+          for line in "${lines[@]}"; do
+            a="${line%%|*}"; email="${line##*|}"
+            login=""
+            if [[ "$email" =~ ^[0-9]+\+([^@]+)@users\.noreply\.github\.com$ ]]; then
+              login="${BASH_REMATCH[1]}"                       # noreply embeds the login
+            elif [[ "$email" =~ ^([^@]+)@users\.noreply\.github\.com$ ]]; then
+              login="${BASH_REMATCH[1]}"
+            else
+              login="$(gh api "search/users?q=$email+in:email" --jq '.items[0].login' 2>/dev/null || true)"
+            fi
             badge=""
             if [ -n "$prev" ] && ! grep -qxF "$a" <<< "$prior"; then
               badge=" *(new contributor)*"
             fi
-            section+="- $a$badge"$'\n'
+            if [ -n "$login" ]; then
+              section+="- [@$login](https://github.com/$login)$badge"$'\n'
+            else
+              section+="- $a$badge"$'\n'
+            fi
           done
 
           gh release view "$TAG" --repo "$REPO" --json body --jq .body > /tmp/body.md
