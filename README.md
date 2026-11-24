@@ -1,20 +1,25 @@
-# gh-actions — release & build workflows
+# gh-actions — composable workflows for GitHub Actions
 
-Two composable workflows for GitHub Actions. **`release.yml`** wraps
-release-please and adds the Release body/metadata it can't produce.
-**`build.yml`** is the optional CI layer for projects that ship binaries.
-Use one, the other, or both.
+Six reusable workflows. **`release.yml`** wraps release-please and adds
+the Release body/metadata it can't produce. **`build.yml`** is the CI
+layer for projects that ship binaries. **`ci.yml`** is generic project
+CI. **`npm-publish.yml`** is OIDC trusted publishing. **`pr-title.yml`**
+gates conventional-commits PR titles. **`version.yml`** self-versions
+this repo. Use one, some, or all — every workflow is independent.
 
 ```
-            ┌────────────────────────────────────────────────┐
-            │  JoShMiQueL/gh-actions                         │
-            │                                                │
-            │  release.yml ──► release-please + Release body │
-            │                  (title, notes, Contributors)  │
-            │                                                │
-            │  build.yml   ──► toolchain → build → package   │
-            │                  → attach → post-publish       │
-            └────────────────────────────────────────────────┘
+            ┌────────────────────────────────────────────────────┐
+            │  JoShMiQueL/gh-actions                             │
+            │                                                    │
+            │  ci.yml        ──► install → verify → test×matrix  │
+            │  pr-title.yml  ──► conventional-commits PR gate    │
+            │  release.yml   ──► release-please + Release body   │
+            │                    (title, notes, Contributors)    │
+            │  npm-publish   ──► verify-tag → test → OIDC npm    │
+            │  build.yml     ──► toolchain → build → package     │
+            │                    → attach → post-publish         │
+            │  version.yml   ──► self-versioning (this repo)     │
+            └────────────────────────────────────────────────────┘
 ```
 
 ## The model
@@ -309,6 +314,115 @@ jobs:
     uses: JoShMiQueL/gh-actions/.github/workflows/build.yml@main
     with: { version: ${{ inputs.version }}, toolchain: go, ... }
 ```
+
+# `ci.yml` — generic project CI
+
+Install → verify (typecheck/build/lint) once → test fanned out over an OS
+matrix. Package-manager agnostic — the same workflow covers bun, npm,
+pnpm, Python, Cargo…
+
+```yaml
+on:
+  push: { branches: [main] }
+  pull_request:
+jobs:
+  ci:
+    uses: JoShMiQueL/gh-actions/.github/workflows/ci.yml@v1
+```
+
+## `ci.yml` — inputs
+
+| Input | Default | What it does |
+|---|---|---|
+| `node-version` | `""` | `setup-node` version — `"24"`, `"lts/*"`. Empty skips Node. |
+| `bun-version` | `""` | `setup-bun` version — `"1.4.0"`. Empty skips Bun. |
+| `working-directory` | `""` | `cd` here before commands — monorepo support. |
+| `setup-command` | `""` | Free-form step **before** install — apt deps, codegen, `pip install`. |
+| `install-command` | `bun install --frozen-lockfile` | Dependency install — `npm ci`, `pnpm i --frozen-lockfile`, `pip install -e .`. Empty skips. |
+| `verify-commands` | `typecheck` + `build` | Newline-separated checks on the **first** OS only. Empty skips the verify job. |
+| `test-command` | `bun test` | Run on every OS in the matrix. Empty skips the test job. |
+| `os-matrix` | `ubuntu-24.04,windows-2022,macos-15` | JSON array of runner labels the test fans out over. |
+| `fail-fast` | `true` | Cancel remaining legs on the first failure. |
+
+## `ci.yml` — secrets
+
+| Secret | Needed for |
+|---|---|
+| `token` | GitHub API access inside a test — usually unused. |
+| `env-json` | JSON object → env vars in every step — passes any secret set without this workflow knowing names. |
+
+---
+
+# `npm-publish.yml` — OIDC trusted publishing
+
+`verify-tag → test → npm publish --provenance`, idempotent — re-running
+a tag or cutting a Release over an already-published version is a no-op,
+not an E409. No npm token in the repo: the package links to this repo +
+workflow via npm's *Trusted Publisher* setting.
+
+```yaml
+on:
+  push: { tags: ["v*"] }
+  release: { types: [published] }
+  workflow_dispatch:
+jobs:
+  publish:
+    uses: JoShMiQueL/gh-actions/.github/workflows/npm-publish.yml@v1
+    permissions:
+      id-token: write   # OIDC — required
+      contents: read
+```
+
+## `npm-publish.yml` — inputs
+
+| Input | Default | What it does |
+|---|---|---|
+| `node-version` | `lts/*` | Node for publish — npm publish always runs on Node. |
+| `bun-version` | `""` | Bun for install/test when they use it. |
+| `working-directory` | `""` | Subdirectory with `package.json` — monorepo support. |
+| `install-command` | `bun install --frozen-lockfile` | Dependency install. |
+| `verify-commands` | `typecheck` + `build` | Pre-publish checks, newline-separated. |
+| `test-command` | `bun test` | Gated before publish. Empty skips the test job. |
+| `os-matrix` | `ubuntu-24.04,windows-2022,macos-15` | Fan-out — publish needs **all** green. |
+| `fail-fast` | `true` | Matrix cancellation. |
+| `registry-url` | `https://registry.npmjs.org` | Override for GitHub Packages / private registries. |
+| `access` | `public` | `public` or `restricted`. |
+| `provenance` | `true` | `--provenance` flag — OIDC-signed provenance statement. |
+| `dry-run` | `false` | `--dry-run` — validates the tarball without publishing. |
+
+## `npm-publish.yml` — secrets
+
+| Secret | Needed for |
+|---|---|
+| `env-json` | Registry auth for a private mirror, extra env for tests. |
+
+---
+
+# `pr-title.yml` — conventional-commits PR gate
+
+Squash merges put the PR title on main — for release-please to classify
+the change (`feat:` → minor, `fix:` → patch), the title must be
+conventional. Gates `opened`/`edited`/`synchronize`/`ready_for_review`.
+
+```yaml
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+jobs:
+  pr-title:
+    uses: JoShMiQueL/gh-actions/.github/workflows/pr-title.yml@v1
+```
+
+## `pr-title.yml` — inputs
+
+| Input | Default | What it does |
+|---|---|---|
+| `types` | full conventional set | Allowed type prefixes. |
+| `require-scope` | `false` | Force `feat(api):` not just `feat:`. |
+| `subject-pattern` | no leading capital | Regex the subject must match. |
+| `subject-pattern-error` | — | Message shown on mismatch. |
+
+---
 
 # Versioning
 

@@ -1,0 +1,62 @@
+name: PR Title
+
+# ============================================================================
+#  Conventional-commits gate on the PR title. Squash merges put the title on
+#  main — for release-please to classify the change (feat → minor, fix →
+#  patch), the title itself must be conventional.
+#
+#  ── Minimal caller ──────────────────────────────────────────────────────────
+#    on:
+#      pull_request:
+#        types: [opened, edited, synchronize, reopened, ready_for_review]
+#    jobs:
+#      pr-title:
+#        uses: JoShMiQueL/gh-actions/.github/workflows/pr-title.yml@main
+#
+#  ── Custom types / rules ────────────────────────────────────────────────────
+#      with:
+#        types: feat,fix,perf,revert,docs,chore,ci,build,test,refactor,style,deps
+#        require-scope: false
+#        subject-pattern: "^(?![A-Z]).+$"      # no leading capital
+# ============================================================================
+
+on:
+  workflow_call:
+    inputs:
+      types:
+        description: "Allowed conventional-commit types (comma or newline separated)."
+        required: false
+        default: "feat,fix,perf,revert,docs,chore,ci,build,test,refactor,style,deps"
+        type: string
+      require-scope:
+        description: "Require a `(scope)` — feat(api): not just feat:."
+        required: false
+        default: false
+        type: boolean
+      subject-pattern:
+        description: "Regex the subject must match — default rejects leading capitals."
+        required: false
+        default: "^(?![A-Z]).+$"
+        type: string
+      subject-pattern-error:
+        description: "Error message shown when the subject pattern fails."
+        required: false
+        default: "The subject must not start with an uppercase character."
+        type: string
+
+permissions:
+  pull-requests: read
+
+jobs:
+  conventional-title:
+    name: conventional-title
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          types: ${{ inputs.types }}
+          requireScope: ${{ inputs.require-scope }}
+          subjectPattern: ${{ inputs.subject-pattern }}
+          subjectPatternError: ${{ inputs.subject-pattern-error }}

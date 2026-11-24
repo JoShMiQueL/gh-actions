@@ -1,0 +1,249 @@
+name: Publish to npm
+
+# ============================================================================
+#  Trusted-publishing (OIDC) npm release — verify tag → test → publish.
+#  No npm token in the repo: the package is linked to this repo via npm's
+#  "Trusted Publisher" setting (package → Settings → Trusted Publisher →
+#  GitHub Actions → repo + this workflow filename). The runner's OIDC token
+#  proves the publish came from here.
+#
+#  Idempotent: if the version in package.json is already on npm, the publish
+#  step skips — re-running a tag or cutting a GitHub Release over an
+#  already-published version is a no-op, not an E409.
+#
+#  ── Minimal caller (package publishes on v* tags) ───────────────────────────
+#    on:
+#      push:
+#        tags: ["v*"]
+#      release:
+#        types: [published]        # release-please cut a Release → publish
+#      workflow_dispatch:
+#    jobs:
+#      publish:
+#        uses: JoShMiQueL/gh-actions/.github/workflows/npm-publish.yml@main
+#        permissions:
+#          id-token: write         # OIDC — required
+#          contents: read
+#
+#  ── Trigger rules ───────────────────────────────────────────────────────────
+#    - push tag `v1.2.3` → the tag must equal the package.json version
+#      (verify-tag fails early if they disagree — prevents a mistyped tag
+#      silently re-publishing the previous version).
+#    - `release: published` (release-please path) → no tag check needed, the
+#      Release tag is already right.
+#    - `workflow_dispatch` → republishes the checked-out ref's version (used
+#      to recover from a half-published release).
+#
+#  ── Inputs ──────────────────────────────────────────────────────────────────
+#    setup     node-version, bun-version, working-directory
+#    commands  install-command, verify-commands (typecheck/build pre-publish)
+#    test      os-matrix, fail-fast — same matrix semantics as ci.yml
+#    publish   registry-url, access, provenance, dry-run
+# ============================================================================
+
+on:
+  workflow_call:
+    inputs:
+      # ── toolchain ────────────────────────────────────────────────────────
+      node-version:
+        description: "Node for actions/setup-node — '24', 'lts/*'. npm publish always uses Node (bun can't publish)."
+        required: false
+        default: "lts/*"
+        type: string
+      bun-version:
+        description: "Bun version — set when install/test use bun. Empty skips."
+        required: false
+        default: ""
+        type: string
+      working-directory:
+        description: "Subdirectory with package.json — monorepo support."
+        required: false
+        default: ""
+        type: string
+
+      # ── commands ─────────────────────────────────────────────────────────
+      install-command:
+        description: "Dependency install — 'bun install --frozen-lockfile', 'npm ci'."
+        required: false
+        default: "bun install --frozen-lockfile"
+        type: string
+      verify-commands:
+        description: "Newline-separated pre-publish checks — 'npm run typecheck', 'npm run build'. Empty skips."
+        required: false
+        default: |
+          npm run typecheck
+          npm run build
+        type: string
+
+      # ── test matrix ──────────────────────────────────────────────────────
+      test-command:
+        description: "Test run before publishing — 'bun test', 'npm test'. Empty skips the whole test job."
+        required: false
+        default: "bun test"
+        type: string
+      os-matrix:
+        description: "JSON array of runner labels the test fans out over. Publish gates on ALL of them green."
+        required: false
+        default: '["ubuntu-24.04","windows-2022","macos-15"]'
+        type: string
+      fail-fast:
+        description: "Cancel remaining matrix legs on the first failure."
+        required: false
+        default: true
+        type: boolean
+
+      # ── publish ──────────────────────────────────────────────────────────
+      registry-url:
+        description: "npm registry — the default; change for GitHub Packages ('https://npm.pkg.github.com') or a private registry."
+        required: false
+        default: "https://registry.npmjs.org"
+        type: string
+      access:
+        description: "'public' (scoped/new packages) or 'restricted'."
+        required: false
+        default: "public"
+        type: string
+      provenance:
+        description: "Pass --provenance to npm publish — signs the package with the OIDC identity. Recommended; disable only if the registry doesn't support it."
+        required: false
+        default: true
+        type: boolean
+      dry-run:
+        description: "npm publish --dry-run — validates the tarball without publishing. For testing the workflow itself."
+        required: false
+        default: false
+        type: boolean
+
+    secrets:
+      env-json:
+        description: "JSON object of env vars injected into every step — e.g. registry auth for a private mirror."
+        required: false
+
+permissions:
+  id-token: write   # OIDC — the whole point of trusted publishing
+  contents: read
+
+jobs:
+  # ── verify-tag: tag must equal package.json version ──────────────────────
+  # Fails in seconds — a mistyped tag shouldn't burn the matrix or, worse,
+  # re-publish the previous version under the new tag.
+  verify-tag:
+    name: verify-tag
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - run: |
+          TAG="$GITHUB_REF_NAME"
+          DIR="${{ inputs.working-directory || '.' }}"
+          VERSION=$(node -p "require('./$DIR/package.json').version")
+          if [ "${TAG#v}" != "$VERSION" ]; then
+            echo "::error::tag $TAG does not match package.json version $VERSION"
+            exit 1
+          fi
+          echo "publishing $VERSION"
+
+  # ── test: the fan-out, gated before publish ──────────────────────────────
+  test:
+    name: test (${{ matrix.os }})
+    needs: verify-tag
+    if: ${{ inputs.test-command != '' && (github.event_name == 'push' || always()) }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: ${{ inputs.fail-fast }}
+      matrix:
+        os: ${{ fromJSON(inputs.os-matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Bun
+        if: ${{ inputs.bun-version != '' }}
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ inputs.bun-version }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install
+        working-directory: ${{ inputs.working-directory || '.' }}
+        run: ${{ inputs.install-command }}
+
+      - name: Test
+        working-directory: ${{ inputs.working-directory || '.' }}
+        run: ${{ inputs.test-command }}
+
+  # ── publish: OIDC → npm, idempotent ──────────────────────────────────────
+  publish:
+    name: publish
+    needs: [verify-tag, test]
+    if: ${{ always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Bun
+        if: ${{ inputs.bun-version != '' }}
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ inputs.bun-version }}
+
+      # trusted publishing needs npm >= 11.5 — the runner's bundled npm is
+      # usually older, so upgrade before anything else.
+      - name: Setup Node + upgrade npm
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ inputs.node-version }}
+          registry-url: ${{ inputs.registry-url }}
+      - run: npm install -g npm@latest
+
+      - name: Project env
+        if: ${{ secrets.env-json != '' }}
+        run: |
+          echo "${{ secrets.env-json }}" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
+          echo "${{ secrets.env-json }}" | jq -r 'to_entries[] | .value' | while IFS= read -r v; do
+            [ -n "$v" ] && echo "::add-mask::$v"
+          done
+
+      - name: Install
+        if: ${{ inputs.install-command != '' }}
+        working-directory: ${{ inputs.working-directory || '.' }}
+        run: ${{ inputs.install-command }}
+
+      - name: Verify
+        if: ${{ inputs.verify-commands != '' }}
+        working-directory: ${{ inputs.working-directory || '.' }}
+        run: |
+          while IFS= read -r cmd; do
+            [ -z "$cmd" ] && continue
+            echo "── $cmd"
+            eval "$cmd"
+          done <<< '${{ inputs.verify-commands }}'
+
+      # Re-publishing an existing version is E409 — check first so re-runs
+      # and Release-over-already-published are no-ops, not failures.
+      - name: Check if already published
+        id: check
+        working-directory: ${{ inputs.working-directory || '.' }}
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "$NAME@$VERSION already on npm — will skip"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish to npm (trusted publishing)
+        if: steps.check.outputs.published != 'true'
+        working-directory: ${{ inputs.working-directory || '.' }}
+        env:
+          NODE_AUTH_TOKEN: ""   # OIDC — no token needed, provenance via id-token
+        run: |
+          ARGS="--access ${{ inputs.access }}"
+          [ "${{ inputs.provenance }}" = "true" ] && ARGS="$ARGS --provenance"
+          [ "${{ inputs.dry-run }}" = "true" ] && ARGS="$ARGS --dry-run"
+          npm publish $ARGS

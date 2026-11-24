@@ -1,11 +1,14 @@
 # AGENTS.md — guía para agentes trabajando en este repo
 
-Dos workflows reusables en `.github/workflows/`:
+Cinco workflows reusables en `.github/workflows/`:
 
 | Fichero | Rol |
 |---|---|
 | `release.yml` | release-please aumentado — Release PR, title, notes, `### Contributors`, flags. **Sin compilar.** |
 | `build.yml` | capa CI opt-in — toolchain → stamp → build → package (rename/archive/checksums) → attach → post-publish |
+| `ci.yml` | CI genérico — install → verify (1 OS) → test (matriz OS). Agnóstico de package manager via inputs. |
+| `npm-publish.yml` | verify-tag → test → OIDC `npm publish --provenance`, idempotente (skip si ya publicado). |
+| `pr-title.yml` | gate de Conventional Commits en el título del PR — squash-merge safe. |
 | `version.yml` | auto-versionado de ESTE repo — llama a `./release.yml` y mueve el major flotante `v1` |
 
 Los proyectos llaman con `uses: JoShMiQueL/gh-actions/.github/workflows/<f>.yml@<ref>`.
@@ -20,6 +23,9 @@ Los proyectos llaman con `uses: JoShMiQueL/gh-actions/.github/workflows/<f>.yml@
 - **Artifacts se suben por basename** desde dentro de su dir — `gh release upload` rompe paths en Windows.
 - **Todo `run:` de bash termina en `exit 0` o `|| true`** — un `[ -n "$x" ] && echo` final devuelve 1 en inputs vacíos.
 - **`env` es nombre reservado de secret** — por eso `env-json`.
+- **`fromJSON` para matrices por input** — un `os-matrix` string JSON en `workflow_call` se expande con `strategy.matrix.os: ${{ fromJSON(inputs.os-matrix) }}`. `verify` corre solo en `[0]` (no necesita el fan-out).
+- **El test de `npm-publish` gatea el publish** — `needs: [verify-tag, test]` con `if: always() && !contains(needs.*.result, 'failure')` — publish corre solo si TODO el matriz pasó, incluso cuando `test` no corre (skipped ≠ failed).
+- **`--provenance` es opt-out, no opt-in** — OIDC trusted publishing es el default; el flag se pasa a menos que el registry no lo soporte (`provenance: false`).
 
 ## Convenciones del código
 

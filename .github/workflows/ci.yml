@@ -1,0 +1,217 @@
+name: CI
+
+# ============================================================================
+#  Generic project CI — install → typecheck/build/lint (opt) → test, fanned
+#  out over a caller-supplied OS matrix. Package-manager agnostic: bun, npm,
+#  pnpm, yarn, pip+pytest, cargo… anything that installs with a command and
+#  verifies with another.
+#
+#  Replaces the "copy-paste the same 30-line workflow into every repo" pattern.
+#  One caller per project, inputs pick the matrix and the commands.
+#
+#  ── Minimal caller (Node/bun project) ──────────────────────────────────────
+#    on:
+#      push: { branches: [main] }
+#      pull_request:
+#    jobs:
+#      ci:
+#        uses: JoShMiQueL/gh-actions/.github/workflows/ci.yml@main
+#
+#  ── Custom commands ─────────────────────────────────────────────────────────
+#      with:
+#        install-command: pnpm install --frozen-lockfile
+#        verify-commands: |
+#          npm run lint
+#          npm run typecheck
+#          npm run build
+#        test-command: pnpm test
+#        os-matrix: '["ubuntu-24.04","windows-2022"]'
+#
+#  ── Python / no-Node projects ───────────────────────────────────────────────
+#      with:
+#        setup-command: python -m pip install -e .[dev]
+#        install-command: ""            # skip the Node install
+#        verify-commands: ""            # skip typecheck/build
+#        test-command: pytest
+#        node-version: ""               # skip the toolchain entirely
+#
+#  ── How the matrix works ────────────────────────────────────────────────────
+#    `os-matrix` is a JSON array of runner labels — fanned out via `fromJSON`.
+#    The default covers the three desktops; pin exact images (ubuntu-24.04,
+#    windows-2022, macos-15) — `-latest` migrates under you.
+#    `verify` (install + typecheck/build) runs on the FIRST matrix entry;
+#    `test` runs on every entry — the expensive part is the matrix, not the
+#    build.
+#
+#  ── Inputs (grouped) ────────────────────────────────────────────────────────
+#    setup     node-version, bun-version, cache-key-extra, working-directory
+#    commands  setup-command, install-command, verify-commands, test-command
+#    matrix    os-matrix, fail-fast
+# ============================================================================
+
+on:
+  workflow_call:
+    inputs:
+      # ── toolchain ────────────────────────────────────────────────────────
+      node-version:
+        description: "Node version for actions/setup-node — '24', 'lts/*', '20.18.0'. Empty skips Node setup (use with bun-version or a custom toolchain)."
+        required: false
+        default: ""
+        type: string
+      bun-version:
+        description: "Bun version for oven-sh/setup-bun — '1.4.0', 'latest'. Empty skips Bun setup."
+        required: false
+        default: ""
+        type: string
+      working-directory:
+        description: "Subdirectory to cd into — monorepo support. install/verify/test run relative to it."
+        required: false
+        default: ""
+        type: string
+
+      # ── commands ─────────────────────────────────────────────────────────
+      setup-command:
+        description: "Free-form command run BEFORE install — apt deps, pip, codegen. bash."
+        required: false
+        default: ""
+        type: string
+      install-command:
+        description: "Dependency install — 'bun install --frozen-lockfile', 'npm ci', 'pnpm install --frozen-lockfile', 'pip install -e .'. Empty skips."
+        required: false
+        default: "bun install --frozen-lockfile"
+        type: string
+      verify-commands:
+        description: "Newline-separated checks run on the first OS only — 'npm run typecheck', 'npm run build', 'cargo clippy'. Empty skips the whole verify job."
+        required: false
+        default: |
+          npm run typecheck
+          npm run build
+        type: string
+      test-command:
+        description: "Test command run on every OS in the matrix — 'bun test', 'npm test', 'pytest', 'cargo test'. Empty skips the test job."
+        required: false
+        default: "bun test"
+        type: string
+
+      # ── matrix ───────────────────────────────────────────────────────────
+      os-matrix:
+        description: "JSON array of runner labels — '[\"ubuntu-24.04\",\"windows-2022\",\"macos-15\"]'. Test fans out over it; verify runs on the first entry."
+        required: false
+        default: '["ubuntu-24.04","windows-2022","macos-15"]'
+        type: string
+      fail-fast:
+        description: "Cancel remaining matrix legs on the first failure."
+        required: false
+        default: true
+        type: boolean
+
+      # ── secrets passthrough ──────────────────────────────────────────────
+      # env-json lives under secrets — see build.yml for why.
+
+    secrets:
+      token:
+        description: "GITHUB_TOKEN or PAT — only needed if a test hits the GitHub API. Usually unused."
+        required: false
+      env-json:
+        description: "JSON object of env vars injected into every step — passes ANY secret set without this workflow knowing names."
+        required: false
+
+jobs:
+  # ── verify: install + typecheck/build — once, on the first OS ────────────
+  verify:
+    name: verify
+    if: ${{ inputs.verify-commands != '' }}
+    # first matrix entry — verify doesn't need the fan-out, one OS proves the
+    # build compiles.
+    runs-on: ${{ fromJSON(inputs.os-matrix)[0] }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node
+        if: ${{ inputs.node-version != '' }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Setup Bun
+        if: ${{ inputs.bun-version != '' }}
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ inputs.bun-version }}
+
+      - name: Project env
+        if: ${{ secrets.env-json != '' }}
+        run: |
+          echo "${{ secrets.env-json }}" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
+          # mask every value — env-json exists to carry secrets
+          echo "${{ secrets.env-json }}" | jq -r 'to_entries[] | .value' | while IFS= read -r v; do
+            [ -n "$v" ] && echo "::add-mask::$v"
+          done
+
+      - name: Setup command
+        if: ${{ inputs.setup-command != '' }}
+        working-directory: ${{ inputs.working-directory || '.' }}
+        run: ${{ inputs.setup-command }}
+
+      - name: Install
+        if: ${{ inputs.install-command != '' }}
+        working-directory: ${{ inputs.working-directory || '.' }}
+        run: ${{ inputs.install-command }}
+
+      - name: Verify
+        working-directory: ${{ inputs.working-directory || '.' }}
+        run: |
+          # run each line of verify-commands — stops at the first failure
+          # (bash -e via the default shell), the same behavior as a local
+          # `npm run a && npm run b`.
+          while IFS= read -r cmd; do
+            [ -z "$cmd" ] && continue
+            echo "── $cmd"
+            eval "$cmd"
+          done <<< '${{ inputs.verify-commands }}'
+
+  # ── test: the fan-out — every OS in the matrix ───────────────────────────
+  test:
+    name: test (${{ matrix.os }})
+    if: ${{ inputs.test-command != '' }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: ${{ inputs.fail-fast }}
+      matrix:
+        os: ${{ fromJSON(inputs.os-matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node
+        if: ${{ inputs.node-version != '' }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Setup Bun
+        if: ${{ inputs.bun-version != '' }}
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ inputs.bun-version }}
+
+      - name: Project env
+        if: ${{ secrets.env-json != '' }}
+        run: |
+          echo "${{ secrets.env-json }}" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
+          echo "${{ secrets.env-json }}" | jq -r 'to_entries[] | .value' | while IFS= read -r v; do
+            [ -n "$v" ] && echo "::add-mask::$v"
+          done
+
+      - name: Setup command
+        if: ${{ inputs.setup-command != '' }}
+        working-directory: ${{ inputs.working-directory || '.' }}
+        run: ${{ inputs.setup-command }}
+
+      - name: Install
+        if: ${{ inputs.install-command != '' }}
+        working-directory: ${{ inputs.working-directory || '.' }}
+        run: ${{ inputs.install-command }}
+
+      - name: Test
+        working-directory: ${{ inputs.working-directory || '.' }}
+        run: ${{ inputs.test-command }}
