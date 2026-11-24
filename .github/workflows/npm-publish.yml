@@ -129,7 +129,8 @@ jobs:
   # re-publish the previous version under the new tag.
   verify-tag:
     name: verify-tag
-    if: ${{ github.event_name == 'push' }}
+    # push + release events both carry the tag in ref_name; dispatch doesn't.
+    if: ${{ github.event_name != 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -147,7 +148,11 @@ jobs:
   test:
     name: test (${{ matrix.os }})
     needs: verify-tag
-    if: ${{ inputs.test-command != '' && (github.event_name == 'push' || always()) }}
+    # `always()` is required to evaluate the if at all when verify-tag was
+    # skipped (dispatch) — a skipped need otherwise skips the whole job.
+    # The explicit != failure/cancelled guards keep a bad tag from reaching
+    # the matrix.
+    if: ${{ always() && inputs.test-command != '' && needs.verify-tag.result != 'failure' && needs.verify-tag.result != 'cancelled' }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: ${{ inputs.fail-fast }}
@@ -199,11 +204,15 @@ jobs:
           registry-url: ${{ inputs.registry-url }}
       - run: npm install -g npm@latest
 
+      # `secrets` isn't allowed in `if:` — run the step and early-exit inside
+      # instead. Same effect, parses.
       - name: Project env
-        if: ${{ secrets.env-json != '' }}
+        env:
+          ENV_JSON: ${{ secrets.env-json }}
         run: |
-          echo "${{ secrets.env-json }}" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
-          echo "${{ secrets.env-json }}" | jq -r 'to_entries[] | .value' | while IFS= read -r v; do
+          [ -z "$ENV_JSON" ] && { echo "no env-json — skipping"; exit 0; }
+          echo "$ENV_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
+          echo "$ENV_JSON" | jq -r 'to_entries[] | .value' | while IFS= read -r v; do
             [ -n "$v" ] && echo "::add-mask::$v"
           done
 

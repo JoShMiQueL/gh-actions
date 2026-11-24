@@ -139,12 +139,15 @@ jobs:
         with:
           bun-version: ${{ inputs.bun-version }}
 
+      # `secrets` isn't allowed in `if:` — early-exit inside the run.
       - name: Project env
-        if: ${{ secrets.env-json != '' }}
+        env:
+          ENV_JSON: ${{ secrets.env-json }}
         run: |
-          echo "${{ secrets.env-json }}" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
+          [ -z "$ENV_JSON" ] && { echo "no env-json — skipping"; exit 0; }
+          echo "$ENV_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
           # mask every value — env-json exists to carry secrets
-          echo "${{ secrets.env-json }}" | jq -r 'to_entries[] | .value' | while IFS= read -r v; do
+          echo "$ENV_JSON" | jq -r 'to_entries[] | .value' | while IFS= read -r v; do
             [ -n "$v" ] && echo "::add-mask::$v"
           done
 
@@ -195,10 +198,12 @@ jobs:
           bun-version: ${{ inputs.bun-version }}
 
       - name: Project env
-        if: ${{ secrets.env-json != '' }}
+        env:
+          ENV_JSON: ${{ secrets.env-json }}
         run: |
-          echo "${{ secrets.env-json }}" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
-          echo "${{ secrets.env-json }}" | jq -r 'to_entries[] | .value' | while IFS= read -r v; do
+          [ -z "$ENV_JSON" ] && { echo "no env-json — skipping"; exit 0; }
+          echo "$ENV_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
+          echo "$ENV_JSON" | jq -r 'to_entries[] | .value' | while IFS= read -r v; do
             [ -n "$v" ] && echo "::add-mask::$v"
           done
 
