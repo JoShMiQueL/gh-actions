@@ -52,11 +52,24 @@ jobs:
     name: conventional-title
     runs-on: ubuntu-24.04
     steps:
+      # amannn/action-semantic-pull-request wants `types` NEWLINE-separated —
+      # a comma list ("feat,fix") is read as one bogus type and every title
+      # fails with "Unknown release type". Normalize commas → newlines so the
+      # caller can write either form.
+      - name: Normalize types
+        id: types
+        shell: bash
+        run: |
+          TYPES=$(echo '${{ inputs.types }}' | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -v '^$')
+          echo "types<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$TYPES" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
       - uses: amannn/action-semantic-pull-request@v6
         env:
           GITHUB_TOKEN: ${{ github.token }}
         with:
-          types: ${{ inputs.types }}
+          types: ${{ steps.types.outputs.types }}
           requireScope: ${{ inputs.require-scope }}
           subjectPattern: ${{ inputs.subject-pattern }}
           subjectPatternError: ${{ inputs.subject-pattern-error }}
