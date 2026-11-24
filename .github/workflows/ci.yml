@@ -6,8 +6,9 @@ name: CI
 #  pnpm, yarn, pip+pytest, cargo… anything that installs with a command and
 #  verifies with another.
 #
-#  Replaces the "copy-paste the same 30-line workflow into every repo" pattern.
-#  One caller per project, inputs pick the matrix and the commands.
+#  Every `run:` step pins `shell: bash` — without it, Windows runners use
+#  pwsh and any bash syntax (`[ -z .. ]`, `<<<`, `while read`) dies at parse
+#  time. Git-Bash ships on windows-latest so bash is always available.
 #
 #  ── Minimal caller (Node/bun project) ──────────────────────────────────────
 #    on:
@@ -95,7 +96,7 @@ on:
 
       # ── matrix ───────────────────────────────────────────────────────────
       os-matrix:
-        description: "JSON array of runner labels — '[\"ubuntu-24.04\",\"windows-2022\",\"macos-15\"]'. Test fans out over it; verify runs on the first entry."
+        description: 'JSON array of runner labels — ["ubuntu-24.04","windows-2022","macos-15"]. Test fans out over it; verify runs on the first entry.'
         required: false
         default: '["ubuntu-24.04","windows-2022","macos-15"]'
         type: string
@@ -139,10 +140,12 @@ jobs:
         with:
           bun-version: ${{ inputs.bun-version }}
 
-      # `secrets` isn't allowed in `if:` — early-exit inside the run.
+      # `secrets` isn't allowed in `if:` — the step always runs and early-
+      # exits inside the script. Same effect, parses.
       - name: Project env
         env:
           ENV_JSON: ${{ secrets.env-json }}
+        shell: bash
         run: |
           [ -z "$ENV_JSON" ] && { echo "no env-json — skipping"; exit 0; }
           echo "$ENV_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
@@ -154,15 +157,18 @@ jobs:
       - name: Setup command
         if: ${{ inputs.setup-command != '' }}
         working-directory: ${{ inputs.working-directory || '.' }}
+        shell: bash
         run: ${{ inputs.setup-command }}
 
       - name: Install
         if: ${{ inputs.install-command != '' }}
         working-directory: ${{ inputs.working-directory || '.' }}
+        shell: bash
         run: ${{ inputs.install-command }}
 
       - name: Verify
         working-directory: ${{ inputs.working-directory || '.' }}
+        shell: bash
         run: |
           # run each line of verify-commands — stops at the first failure
           # (bash -e via the default shell), the same behavior as a local
@@ -200,6 +206,7 @@ jobs:
       - name: Project env
         env:
           ENV_JSON: ${{ secrets.env-json }}
+        shell: bash
         run: |
           [ -z "$ENV_JSON" ] && { echo "no env-json — skipping"; exit 0; }
           echo "$ENV_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
@@ -210,13 +217,16 @@ jobs:
       - name: Setup command
         if: ${{ inputs.setup-command != '' }}
         working-directory: ${{ inputs.working-directory || '.' }}
+        shell: bash
         run: ${{ inputs.setup-command }}
 
       - name: Install
         if: ${{ inputs.install-command != '' }}
         working-directory: ${{ inputs.working-directory || '.' }}
+        shell: bash
         run: ${{ inputs.install-command }}
 
       - name: Test
         working-directory: ${{ inputs.working-directory || '.' }}
+        shell: bash
         run: ${{ inputs.test-command }}

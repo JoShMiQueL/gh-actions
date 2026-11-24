@@ -11,6 +11,9 @@ name: Publish to npm
 #  step skips — re-running a tag or cutting a GitHub Release over an
 #  already-published version is a no-op, not an E409.
 #
+#  Every `run:` step pins `shell: bash` — Windows runners default to pwsh and
+#  bash syntax dies at parse time otherwise.
+#
 #  ── Minimal caller (package publishes on v* tags) ───────────────────────────
 #    on:
 #      push:
@@ -29,10 +32,10 @@ name: Publish to npm
 #    - push tag `v1.2.3` → the tag must equal the package.json version
 #      (verify-tag fails early if they disagree — prevents a mistyped tag
 #      silently re-publishing the previous version).
-#    - `release: published` (release-please path) → no tag check needed, the
-#      Release tag is already right.
+#    - `release: published` (release-please path) → the tag is also checked —
+#      it's what the Release named.
 #    - `workflow_dispatch` → republishes the checked-out ref's version (used
-#      to recover from a half-published release).
+#      to recover from a half-published release). No tag to check.
 #
 #  ── Inputs ──────────────────────────────────────────────────────────────────
 #    setup     node-version, bun-version, working-directory
@@ -129,12 +132,14 @@ jobs:
   # re-publish the previous version under the new tag.
   verify-tag:
     name: verify-tag
-    # push + release events both carry the tag in ref_name; dispatch doesn't.
+    # push (tag) and release events both carry the tag in ref_name; dispatch
+    # has no tag to check.
     if: ${{ github.event_name != 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
-      - run: |
+      - shell: bash
+        run: |
           TAG="$GITHUB_REF_NAME"
           DIR="${{ inputs.working-directory || '.' }}"
           VERSION=$(node -p "require('./$DIR/package.json').version")
@@ -174,10 +179,12 @@ jobs:
 
       - name: Install
         working-directory: ${{ inputs.working-directory || '.' }}
+        shell: bash
         run: ${{ inputs.install-command }}
 
       - name: Test
         working-directory: ${{ inputs.working-directory || '.' }}
+        shell: bash
         run: ${{ inputs.test-command }}
 
   # ── publish: OIDC → npm, idempotent ──────────────────────────────────────
@@ -202,13 +209,13 @@ jobs:
         with:
           node-version: ${{ inputs.node-version }}
           registry-url: ${{ inputs.registry-url }}
-      - run: npm install -g npm@latest
+      - shell: bash
+        run: npm install -g npm@latest
 
-      # `secrets` isn't allowed in `if:` — run the step and early-exit inside
-      # instead. Same effect, parses.
       - name: Project env
         env:
           ENV_JSON: ${{ secrets.env-json }}
+        shell: bash
         run: |
           [ -z "$ENV_JSON" ] && { echo "no env-json — skipping"; exit 0; }
           echo "$ENV_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
@@ -219,11 +226,13 @@ jobs:
       - name: Install
         if: ${{ inputs.install-command != '' }}
         working-directory: ${{ inputs.working-directory || '.' }}
+        shell: bash
         run: ${{ inputs.install-command }}
 
       - name: Verify
         if: ${{ inputs.verify-commands != '' }}
         working-directory: ${{ inputs.working-directory || '.' }}
+        shell: bash
         run: |
           while IFS= read -r cmd; do
             [ -z "$cmd" ] && continue
@@ -236,6 +245,7 @@ jobs:
       - name: Check if already published
         id: check
         working-directory: ${{ inputs.working-directory || '.' }}
+        shell: bash
         run: |
           NAME=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
@@ -251,6 +261,7 @@ jobs:
         working-directory: ${{ inputs.working-directory || '.' }}
         env:
           NODE_AUTH_TOKEN: ""   # OIDC — no token needed, provenance via id-token
+        shell: bash
         run: |
           ARGS="--access ${{ inputs.access }}"
           [ "${{ inputs.provenance }}" = "true" ] && ARGS="$ARGS --provenance"

@@ -23,6 +23,7 @@ Los proyectos llaman con `uses: JoShMiQueL/gh-actions/.github/workflows/<f>.yml@
 - **Artifacts se suben por basename** desde dentro de su dir — `gh release upload` rompe paths en Windows.
 - **Todo `run:` de bash termina en `exit 0` o `|| true`** — un `[ -n "$x" ] && echo` final devuelve 1 en inputs vacíos.
 - **`env` es nombre reservado de secret** — por eso `env-json`.
+- **`shell: bash` en CADA `run:` de un reusable** — sin pin, Windows usa pwsh y cualquier sintaxis POSIX (`[ -z .. ]`, `<<<`, `while read`) muere en parseo, no en ejecución. Git-Bash está en todos los runners windows-latest/macos/ubuntu, así que bash es el shell universal.
 - **`secrets` NO se puede evaluar en `if:`** (ni step ni job) — `if: secrets.X != ''` es error de parseo ("Unrecognized named-value: 'secrets'") y mata el run entero sin jobs. La forma correcta: pasar el secret a `env: ENV_JSON: ${{ secrets.X }}` y hacer early-exit dentro del `run` (`[ -z "$ENV_JSON" ] && exit 0`).
 - **`fromJSON` para matrices por input** — un `os-matrix` string JSON en `workflow_call` se expande con `strategy.matrix.os: ${{ fromJSON(inputs.os-matrix) }}`. `verify` corre solo en `[0]` (no necesita el fan-out).
 - **El test de `npm-publish` gatea el publish** — `needs: [verify-tag, test]` con `if: always() && !contains(needs.*.result, 'failure')` — publish corre solo si TODO el matriz pasó, incluso cuando `test` no corre (skipped ≠ failed).
