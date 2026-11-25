@@ -1,0 +1,39 @@
+name: Validate
+
+# ============================================================================
+#  Self-validation for the reusable workflows. gh-actions has no build/test —
+#  the artifact IS the yaml. What can break it:
+#    - a workflow that doesn't parse (kills every caller run at dispatch)
+#    - a workflow_call input referenced but not declared (caller gets a
+#      "Unexpected input" / "Missing required input" error at runtime)
+#    - `secrets.` inside an `if:` (parse-time failure, run dies with 0 jobs)
+#
+#  The 5 consumer repos all `uses: ...@main` — a bad push here breaks them
+#  in sync. This workflow runs on every push/PR so `main` can't absorb a
+#  broken reusable silently.
+#
+#  It doesn't exercise the workflows (that needs real events) — it proves
+#  they're structurally valid and consistent. The logic lives in
+#  .github/scripts/validate-workflows.py so it's testable.
+# ============================================================================
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: validate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: pip install pyyaml
+      - run: python .github/scripts/validate-workflows.py
