@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.2.0](https://github.com/JoShMiQueL/gh-actions/compare/v1.1.2...v1.2.0) (2026-11-25)
+
+
+### Features
+
+* ci, npm-publish, pr-title reusable workflows — generic package-manager-agnostic CI, OIDC trusted publishing, conventional-commits PR gate ([997e791](https://github.com/JoShMiQueL/gh-actions/commit/997e791c1f51dce8dccd125f39c5461281632f3d))
+* **release:** Contributors linkean a [@login](https://github.com/login) en vez de nombre plano ([5413ae7](https://github.com/JoShMiQueL/gh-actions/commit/5413ae724ef523dc59b9d3453a0767f22902ce16))
+* self-validation — validate.yml + validate-workflows.py catches YAML parse errors, undeclared workflow_call inputs/secrets, secrets-in-if ([8e32872](https://github.com/JoShMiQueL/gh-actions/commit/8e32872af8e3ccd92a3eb0da995ae59924222a0a))
+
+
+### Bug Fixes
+
+* **ci,npm-publish:** pin shell: bash on every run step — Windows defaults to pwsh and POSIX syntax dies at parse time ([172c693](https://github.com/JoShMiQueL/gh-actions/commit/172c6934d772585659df0538d63897a309df0b5c))
+* **ci,npm-publish:** secrets can't be evaluated in if: — early-exit inside the run via env passthrough; test job needs always() guard for dispatch path ([5e86d66](https://github.com/JoShMiQueL/gh-actions/commit/5e86d66b08442006ccec1785eae330e53596db4e))
+* **pr-title:** normalize types input — action wants newline-separated, commas were read as one bogus type ([e49380c](https://github.com/JoShMiQueL/gh-actions/commit/e49380c2bbe4a8ddb86f3a76dc352c44229fed7e))
+* **release:** Contributors usan [@login](https://github.com/login) nativo — [[@l](https://github.com/l)](url) no hace mention ([d72f68c](https://github.com/JoShMiQueL/gh-actions/commit/d72f68ca183b7a5959f0af6957fe9d03f816b05b))
+* **release:** normaliza '](url)(date)' -&gt; '](url) (date)' en el body ([b8cbb05](https://github.com/JoShMiQueL/gh-actions/commit/b8cbb05c32dda0e9bb7286c1ad3523a52b51b483))
+* **version.yml:** read secrets.RELEASE_PLEASE_TOKEN in the caller — secrets.token is only the reusable's alias (GH_TOKEN was empty, gh api 401s) ([0d04da7](https://github.com/JoShMiQueL/gh-actions/commit/0d04da759609e92622fa5b67fc8c621522dcb518))
+
 ## [1.1.2](https://github.com/JoShMiQueL/gh-actions/compare/v1.1.1...v1.1.2) (2026-11-15)
 
 
