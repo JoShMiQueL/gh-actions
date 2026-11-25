@@ -1,0 +1,139 @@
+name: dep-cascade
+
+# Reusable: open a PR bumping an exact-pin dependency after one of your
+# upstream libraries publishes. Pair with exact pins in the consumer's
+# package.json — what you tested is what installs, and this workflow is
+# the conveyor that moves the pin forward when upstream releases.
+#
+# Trigger it from the upstream repo's publish flow (or manually):
+#
+#   gh workflow run dep-cascade.yml \
+#     -f package=devin-engine -f version=0.0.10
+#
+# or as a reusable call from another workflow:
+#
+#   cascade:
+#     uses: JoShMiQueL/gh-actions/.github/workflows/dep-cascade.yml@v1
+#     with:
+#       package: devin-engine
+#       version: 0.0.10
+#     secrets:
+#       token: ${{ secrets.CASCADE_TOKEN }}
+#
+# The token needs `contents: write` + `pull-requests: write` on this repo
+# (a PAT or a GitHub App token — GITHUB_TOKEN works when the workflow is
+# dispatched inside the consumer repo itself).
+
+on:
+  workflow_call:
+    inputs:
+      package:
+        description: npm package name to pin (e.g. devin-engine)
+        required: true
+        type: string
+      version:
+        description: Exact version to pin (no caret)
+        required: true
+        type: string
+      base:
+        description: Base branch for the PR
+        required: false
+        type: string
+        default: main
+    secrets:
+      token:
+        description: Token with contents+PR write on this repo
+        required: false
+  workflow_dispatch:
+    inputs:
+      package:
+        description: npm package name to pin (e.g. devin-engine)
+        required: true
+        type: string
+      version:
+        description: Exact version to pin (no caret)
+        required: true
+        type: string
+      base:
+        description: Base branch for the PR
+        required: false
+        type: string
+        default: main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.token || github.token }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Pin the dependency exactly
+        id: pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkg="${{ inputs.package }}"
+          ver="${{ inputs.version }}"
+          current=$(node -p "try{require('./package.json').dependencies?.['$pkg'] ?? ''}catch{''}")
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          if [[ "$current" == "$ver" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "already pinned at $ver — nothing to do"
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          node -e "
+            const fs = require('node:fs')
+            const p = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+            if (!p.dependencies?.['$pkg']) { console.error('$pkg not in dependencies'); process.exit(1) }
+            p.dependencies['$pkg'] = '$ver'
+            fs.writeFileSync('package.json', JSON.stringify(p, null, 2) + '\n')
+          "
+          echo "pinned $pkg $current -> $ver"
+
+      - name: Refresh the lockfile
+        if: steps.pin.outputs.skip != 'true'
+        shell: bash
+        run: |
+          if [[ -f bun.lock || -f bun.lockb ]]; then
+            npm i -g bun >/dev/null 2>&1
+            bun install --no-save 2>&1 | tail -2 || bun install 2>&1 | tail -2
+          else
+            npm install --package-lock-only --no-audit --no-fund 2>&1 | tail -2
+          fi
+
+      - name: Open the bump PR
+        if: steps.pin.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.token || github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pkg="${{ inputs.package }}"
+          ver="${{ inputs.version }}"
+          base="${{ inputs.base }}"
+          branch="chore/dep-${pkg}-${ver}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$branch"
+          git add package.json bun.lock bun.lockb package-lock.json 2>/dev/null || git add -A
+          git commit -m "chore(deps): pin ${pkg} ${ver}"
+          git push -f origin "$branch"
+          existing=$(gh pr list --state open --head "$branch" --json number --jq '.[0].number // ""' || true)
+          if [[ -n "$existing" ]]; then
+            echo "PR #$existing already open — branch updated"
+            exit 0
+          fi
+          gh pr create \
+            --title "chore(deps): pin ${pkg} ${ver}" \
+            --body "Automated dependency cascade: ${pkg} ${ver} was published upstream — this PR moves the exact pin forward. Merge after CI goes green, then the release flow picks it up as a dependency update." \
+            --base "$base"

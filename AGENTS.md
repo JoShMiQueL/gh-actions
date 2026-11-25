@@ -1,6 +1,6 @@
 # AGENTS.md — guía para agentes trabajando en este repo
 
-Cinco workflows reusables en `.github/workflows/`:
+Siete workflows reusables en `.github/workflows/`:
 
 | Fichero | Rol |
 |---|---|
@@ -9,6 +9,7 @@ Cinco workflows reusables en `.github/workflows/`:
 | `ci.yml` | CI genérico — install → verify (1 OS) → test (matriz OS). Agnóstico de package manager via inputs. |
 | `npm-publish.yml` | verify-tag → test → OIDC `npm publish --provenance`, idempotente (skip si ya publicado). |
 | `pr-title.yml` | gate de Conventional Commits en el título del PR — squash-merge safe. |
+| `dep-cascade.yml` | abre PR pin-exacto de una dependencia tras un publish upstream — el conveyor de la cadena libs → consumidores |
 | `version.yml` | auto-versionado de ESTE repo — llama a `./release.yml` y mueve el major flotante `v1` |
 
 Los proyectos llaman con `uses: JoShMiQueL/gh-actions/.github/workflows/<f>.yml@<ref>`.
