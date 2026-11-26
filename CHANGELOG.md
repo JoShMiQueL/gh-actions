@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.3.0](https://github.com/JoShMiQueL/gh-actions/compare/v1.2.0...v1.3.0) (2026-11-26)
+
+
+### Features
+
+* dep-cascade reusable workflow — opens exact-pin dependency bump PRs in consumer repos after an upstream library publishes, the conveyor for pinned dependency chains ([0065e35](https://github.com/JoShMiQueL/gh-actions/commit/0065e35fedf2d3e3815fdb1d223459c206fd5c07))
+
+
+### Reverts
+
+* drop dep-cascade — dependency cascade stays manual until the pain points are proven in practice ([fd087e5](https://github.com/JoShMiQueL/gh-actions/commit/fd087e520ff83def5ffb821577548bb06ede10d7))
+
 ## [1.2.0](https://github.com/JoShMiQueL/gh-actions/compare/v1.1.2...v1.2.0) (2026-11-25)
 
 
