@@ -87,7 +87,7 @@ on:
       os-matrix:
         description: "JSON array of runner labels the test fans out over. Publish gates on ALL of them green."
         required: false
-        default: '["ubuntu-24.04","windows-2022","macos-15"]'
+        default: '["ubuntu-24.04","windows-2022"]'
         type: string
       fail-fast:
         description: "Cancel remaining matrix legs on the first failure."

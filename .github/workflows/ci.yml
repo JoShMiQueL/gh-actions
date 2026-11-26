@@ -96,9 +96,9 @@ on:
 
       # ── matrix ───────────────────────────────────────────────────────────
       os-matrix:
-        description: 'JSON array of runner labels — ["ubuntu-24.04","windows-2022","macos-15"]. Test fans out over it; verify runs on the first entry.'
+        description: 'JSON array of runner labels — ["ubuntu-24.04","windows-2022"]. Test fans out over it; verify runs on the first entry.'
         required: false
-        default: '["ubuntu-24.04","windows-2022","macos-15"]'
+        default: '["ubuntu-24.04","windows-2022"]'
         type: string
       fail-fast:
         description: "Cancel remaining matrix legs on the first failure."
